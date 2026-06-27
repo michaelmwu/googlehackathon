@@ -373,20 +373,23 @@ export function App() {
       ) : (
         <section
           id="app"
-          className="mx-auto min-h-[calc(100svh-64px)] w-[min(1120px,calc(100vw-24px))] pt-5 pb-44 md:w-[min(1120px,calc(100vw-32px))] md:py-20"
+          className="mx-auto min-h-[calc(100svh-64px)] w-[min(1120px,calc(100vw-24px))] pt-5 pb-44 md:w-[min(1120px,calc(100vw-32px))] md:py-10"
         >
-          <div className="mx-auto mb-6 hidden max-w-[720px] text-center md:block">
-            <h2 className="font-serif text-4xl text-indigo-soft md:text-5xl">Try the loop now.</h2>
-            <p className="mt-4 text-mist">
-              Move between Scatter, Flow, and Reflect without losing your place.
-            </p>
-          </div>
+          {!user ? (
+            <div className="mx-auto mb-6 hidden max-w-[720px] text-center md:block">
+              <h2 className="font-serif text-4xl text-indigo-soft md:text-5xl">
+                Try the loop now.
+              </h2>
+              <p className="mt-4 text-mist">
+                Move between Scatter, Flow, and Reflect without losing your place.
+              </p>
+            </div>
+          ) : null}
 
           {user ? (
             <DesktopModeSwitcher
               memoryCount={memory.count}
               screen={screen}
-              task={task}
               onScreen={handleScreen}
             />
           ) : null}
@@ -1226,70 +1229,65 @@ function DesktopModeSwitcher({
   memoryCount,
   onScreen,
   screen,
-  task,
 }: {
   memoryCount: number;
   onScreen: (screen: Screen) => void;
   screen: Screen;
-  task: FocusTask | null;
 }) {
   const items: Array<{
     screen: Screen;
     label: string;
-    description: string;
     icon: ReactNode;
-    meta: string;
+    badge?: string | undefined;
   }> = [
     {
       screen: "capture",
       label: "Scatter",
-      description: "Save the thought",
-      icon: <Sparkles size={20} />,
-      meta: `${memoryCount} remembered`,
+      icon: <Sparkles size={16} />,
+      badge: memoryCount > 0 ? String(memoryCount) : undefined,
     },
     {
       screen: "focus",
       label: "Flow",
-      description: "Triage into steps",
-      icon: <CheckCircle2 size={20} />,
-      meta: task ? "Task active" : "Ready when saved",
+      icon: <CheckCircle2 size={16} />,
     },
     {
       screen: "reflect",
       label: "Reflect",
-      description: "Notice the pattern",
-      icon: <Moon size={20} />,
-      meta: "Daily signal",
+      icon: <Moon size={16} />,
     },
   ];
 
   return (
-    <nav className="mx-auto mb-8 hidden max-w-[880px] grid-cols-3 gap-3 md:grid">
+    <nav
+      className="mx-auto mb-5 hidden w-fit max-w-full items-center rounded-full border border-white/10 bg-night/80 p-1 shadow-xl backdrop-blur-xl md:flex"
+      aria-label="Starflow modes"
+    >
       {items.map((item) => {
         const active = screen === item.screen;
         return (
           <button
             type="button"
             key={item.screen}
-            className={`rounded-[1.25rem] border p-4 text-left transition ${
+            className={`inline-flex h-10 items-center gap-2 rounded-full px-4 font-bold text-sm transition ${
               active
-                ? "border-indigo-soft/50 bg-indigo-soft/15 shadow-[0_0_24px_rgba(190,194,255,0.12)]"
-                : "border-white/10 bg-white/5 hover:border-indigo-soft/30 hover:bg-white/8"
+                ? "bg-indigo-soft text-indigo-deep shadow-[0_0_18px_rgba(190,194,255,0.18)]"
+                : "text-dim hover:bg-white/5 hover:text-starlight"
             }`}
+            aria-current={active ? "page" : undefined}
             onClick={() => onScreen(item.screen)}
           >
-            <span className="flex items-center justify-between gap-3">
+            {item.icon}
+            <span>{item.label}</span>
+            {item.badge ? (
               <span
-                className={`grid size-10 place-items-center rounded-full ${
-                  active ? "bg-indigo-soft text-indigo-deep" : "bg-indigo-soft/15 text-indigo-soft"
+                className={`grid min-w-5 place-items-center rounded-full px-1.5 text-[0.65rem] ${
+                  active ? "bg-indigo-deep/20 text-indigo-deep" : "bg-white/10 text-dim"
                 }`}
               >
-                {item.icon}
+                {item.badge}
               </span>
-              <span className="text-dim text-xs">{item.meta}</span>
-            </span>
-            <span className="mt-4 block font-bold text-starlight">{item.label}</span>
-            <span className="mt-1 block text-dim text-sm">{item.description}</span>
+            ) : null}
           </button>
         );
       })}
