@@ -141,6 +141,11 @@ export function App() {
   const queryClient = useQueryClient();
   const [screen, setScreen] = useState<Screen>("landing");
   const [dumpText, setDumpText] = useState("");
+  const [supportLine] = useState(
+    () =>
+      supportLines[Math.floor(Math.random() * supportLines.length)] ??
+      "Start with the pile. The system can hold the shape.",
+  );
   const [reflectionAnswers, setReflectionAnswers] = useState({
     tried: "",
     hard: "",
@@ -155,10 +160,6 @@ export function App() {
       text: "I am tuned to this screen. Ask me to guide, rewrite, shrink, or adjust.",
     },
   ]);
-  const supportLine =
-    supportLines[(dumpText.length + 2) % supportLines.length] ??
-    "Start with the pile. The system can hold the shape.";
-
   const configQuery = useQuery({
     queryKey: ["config"],
     queryFn: () => api<Config>("/api/config"),
@@ -292,16 +293,18 @@ export function App() {
   });
 
   const currentAgent: Screen = task && screen === "focus" ? "focus" : screen;
+  const enterFlow = () => {
+    setScreen(user ? (task ? "focus" : "capture") : "signin");
+    window.requestAnimationFrame(() => {
+      document.getElementById("app")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
 
   return (
     <div className="min-h-screen overflow-x-hidden text-starlight">
-      <TopNav
-        user={user}
-        onTry={() => setScreen(user ? (task ? "focus" : "capture") : "signin")}
-        onLogout={() => logoutMutation.mutate()}
-      />
+      <TopNav user={user} onTry={enterFlow} onLogout={() => logoutMutation.mutate()} />
 
-      <Landing onTry={() => setScreen(user ? (task ? "focus" : "capture") : "signin")} />
+      <Landing onTry={enterFlow} />
 
       <section id="app" className="mx-auto w-[min(1120px,calc(100vw-32px))] py-20">
         <div className="mx-auto mb-8 max-w-[720px] text-center">
@@ -362,7 +365,7 @@ export function App() {
         ) : null}
       </section>
 
-      <FinalCta onTry={() => setScreen(user ? (task ? "focus" : "capture") : "signin")} />
+      <FinalCta onTry={enterFlow} />
 
       <AgentDrawer
         agent={currentAgent}
@@ -405,7 +408,9 @@ function TopNav({
             Method
           </a>
           <a href="#features">Features</a>
-          <a href="#app">Try it</a>
+          <button type="button" onClick={onTry}>
+            Try it
+          </button>
         </div>
         {user ? (
           <button
