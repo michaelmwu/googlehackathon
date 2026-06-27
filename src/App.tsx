@@ -399,11 +399,17 @@ export function App() {
         task={task}
         user={user}
         onApplyCaptureText={setDumpText}
+        onApplyCarryForward={(value) =>
+          setReflectionAnswers((current) => ({ ...current, carry: value }))
+        }
         onMessages={setChatMessages}
         onOpenChange={setChatOpen}
         onRoute={(route) => {
           if (route === "capture") {
             setScreen(user ? "capture" : "signin");
+          }
+          if (route === "focus") {
+            setScreen(user ? "focus" : "signin");
           }
         }}
       />
@@ -1101,6 +1107,7 @@ function AgentDrawer({
   dumpText,
   messages,
   onApplyCaptureText,
+  onApplyCarryForward,
   onMessages,
   onOpenChange,
   onRoute,
@@ -1112,6 +1119,7 @@ function AgentDrawer({
   dumpText: string;
   messages: ChatMessage[];
   onApplyCaptureText: (text: string) => void;
+  onApplyCarryForward: (text: string) => void;
   onMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onOpenChange: (open: boolean) => void;
   onRoute: (route: string) => void;
@@ -1135,7 +1143,7 @@ function AgentDrawer({
     mutationFn: (text: string) =>
       api<{
         reply: string;
-        uiPatch?: { captureText?: string; route?: string };
+        uiPatch?: { captureText?: string; carryForward?: string; route?: string };
         task?: FocusTask | null;
       }>("/api/chat", {
         method: "POST",
@@ -1154,6 +1162,10 @@ function AgentDrawer({
     onSuccess: (data) => {
       if (data.uiPatch?.captureText) {
         onApplyCaptureText(data.uiPatch.captureText);
+      }
+
+      if (data.uiPatch?.carryForward) {
+        onApplyCarryForward(data.uiPatch.carryForward);
       }
 
       if (data.uiPatch?.route) {

@@ -552,6 +552,26 @@ function parseModelJson<T>(text: string | undefined): T {
   throw new Error("Model returned no JSON object.");
 }
 
+function modelResponseText(response: {
+  text?: string;
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+}): string | undefined {
+  const directText = response.text?.trim();
+
+  if (directText) {
+    return directText;
+  }
+
+  const partsText =
+    response.candidates
+      ?.flatMap((candidate) => candidate.content?.parts ?? [])
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim() ?? "";
+
+  return partsText || undefined;
+}
+
 function normalizeSteps(rawSteps: unknown): string[] {
   if (!Array.isArray(rawSteps)) {
     return [
@@ -580,11 +600,11 @@ async function generateFreeform(prompt: string, systemInstruction: string): Prom
     config: {
       systemInstruction,
       temperature: 0.4,
-      maxOutputTokens: 1_000,
+      maxOutputTokens: 2_500,
     },
   });
 
-  return response.text ?? "No text was returned by the model.";
+  return modelResponseText(response) ?? "No text was returned by the model.";
 }
 
 async function generateTriage(text: string): Promise<TriageResult> {
@@ -604,11 +624,11 @@ async function generateTriage(text: string): Promise<TriageResult> {
       responseMimeType: "application/json",
       responseSchema: triageSchema(),
       temperature: 0.5,
-      maxOutputTokens: 900,
+      maxOutputTokens: 2_500,
     },
   });
 
-  return parseModelJson<TriageResult>(response.text);
+  return parseModelJson<TriageResult>(modelResponseText(response));
 }
 
 function taskPayload(
@@ -1389,7 +1409,7 @@ app.post("/api/reflect", async (c) => {
         responseMimeType: "application/json",
         responseSchema: reflectionSchema(),
         temperature: 0.45,
-        maxOutputTokens: 500,
+        maxOutputTokens: 2_000,
       },
     });
     const parsed = parseModelJson<{
@@ -1397,7 +1417,7 @@ app.post("/api/reflect", async (c) => {
       pattern?: string;
       small_win?: string;
       tomorrow_experiment?: string;
-    }>(response.text);
+    }>(modelResponseText(response));
     const summary = [
       parsed.summary,
       parsed.pattern ? `Pattern: ${parsed.pattern}` : null,
@@ -1568,7 +1588,7 @@ app.post("/api/events", async (c) => {
         responseMimeType: "application/json",
         responseSchema: eventRouterSchema(),
         temperature: 0.4,
-        maxOutputTokens: 500,
+        maxOutputTokens: 2_000,
       },
     });
     const routed = parseModelJson<{
@@ -1581,7 +1601,7 @@ app.post("/api/events", async (c) => {
       priority_reason?: string | null;
       suggested_tool_action?: string;
       dashboard_note?: string;
-    }>(response.text);
+    }>(modelResponseText(response));
 
     return c.json({
       routed: {
@@ -1710,13 +1730,13 @@ app.post("/api/chat", async (c) => {
             },
             tools: [{ functionDeclarations: toolDeclarations }],
             temperature: 0.45,
-            maxOutputTokens: 700,
+            maxOutputTokens: 2_000,
           },
         });
         const functionCalls = response.functionCalls ?? [];
 
         if (functionCalls.length === 0) {
-          reply = response.text?.trim() ?? "";
+          reply = modelResponseText(response) ?? "";
           break;
         }
 
@@ -1761,10 +1781,10 @@ app.post("/api/chat", async (c) => {
             systemInstruction:
               "Write one concise Starflow reply after the tools ran. Mention what changed only if useful. Do not output JSON.",
             temperature: 0.35,
-            maxOutputTokens: 240,
+            maxOutputTokens: 800,
           },
         });
-        reply = finalResponse.text?.trim() ?? "";
+        reply = modelResponseText(finalResponse) ?? "";
       }
 
       return c.json({
@@ -1783,7 +1803,7 @@ app.post("/api/chat", async (c) => {
         responseMimeType: "application/json",
         responseSchema: chatSchema(),
         temperature: 0.45,
-        maxOutputTokens: 700,
+        maxOutputTokens: 2_000,
       },
     });
 
@@ -1792,7 +1812,7 @@ app.post("/api/chat", async (c) => {
       capture_text?: string | null;
       carry_forward?: string | null;
       route?: string | null;
-    }>(firstResponse.text);
+    }>(modelResponseText(firstResponse));
 
     if (agent === "capture" && parsed.capture_text) {
       uiPatch.captureText = parsed.capture_text;
