@@ -147,6 +147,14 @@ gcloud run deploy saskatoon-ai \
   --set-env-vars GOOGLE_CLOUD_PROJECT=your-project-id,GEMINI_PROJECT_NUMBER=your-project-number
 ```
 
+Before routing demo traffic to a fresh managed database, apply migrations against the production `DATABASE_URL` from a trusted machine or CI job:
+
+```bash
+DATABASE_URL='postgresql://user:password@host:5432/database' bun run db:migrate:url
+```
+
+The local `bun run db:migrate` command starts the Docker Compose Postgres service and is intended for local development only.
+
 Build and deploy from source with Google Cloud Buildpacks:
 
 ```bash

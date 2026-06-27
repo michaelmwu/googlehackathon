@@ -49,9 +49,9 @@ Firestore is the cleaner Google-native shared task store for the ADK story. We a
 
 Page agents are allowed to mutate only a narrow, schema-backed surface:
 
-- Capture agent: may return `capture_text` to rewrite the current dump.
-- Focus agent: may return `updated_first_step`, `updated_task_title`, or `updated_steps`.
+- Capture agent: may call `set_capture_text` to rewrite the current dump or `triage_now` to turn it into the active task.
+- Focus agent: may call bounded task tools such as `rewrite_task`, `replace_steps`, `add_step`, `shrink_step`, and `complete_step`.
 - Landing/sign-in agents: may route users into capture but cannot mutate persisted task state.
-- Reflect agent: may guide reflection but cannot mutate tasks.
+- Reflect agent: may call `set_carry_forward` for the current reflection form, but cannot mutate tasks.
 
-The server applies focus mutations to Postgres and returns the reloaded task, so the UI and shared task store stay consistent. Freeform chat replies alone are not enough when the user asks the agent to change a visible task.
+The server applies focus mutations to Postgres through Gemini function calling and returns the reloaded task, so the UI and shared task store stay consistent. Freeform chat replies alone are not enough when the user asks the agent to change a visible task.

@@ -16,6 +16,7 @@
     "db:down": "./scripts/dev-db.sh down",
     "db:logs": "./scripts/dev-db.sh logs -f postgres",
     "db:migrate": "./scripts/db-migrate.sh",
+    "db:migrate:url": "./scripts/db-migrate-url.sh",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"

@@ -11,29 +11,40 @@ function isProduction(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-function databaseUrl(): string {
-  const url = envValue("DATABASE_URL");
+function makeClient(): ReturnType<typeof postgres> {
+  const sharedOpts = { max: 5, prepare: false } as const;
 
+  // Cloud SQL Auth Proxy socket: CLOUD_SQL_INSTANCE = project:region:instance
+  // Cloud Run attaches the socket at /cloudsql/<CLOUD_SQL_INSTANCE>
+  const cloudSqlInstance = envValue("CLOUD_SQL_INSTANCE");
+  if (cloudSqlInstance) {
+    return postgres({
+      ...sharedOpts,
+      host: `/cloudsql/${cloudSqlInstance}`,
+      user: envValue("CLOUD_SQL_USER") ?? "agent_app",
+      password: envValue("CLOUD_SQL_PASSWORD") ?? "",
+      database: envValue("CLOUD_SQL_DATABASE") ?? "agent_context",
+    });
+  }
+
+  const url = envValue("DATABASE_URL");
   if (url) {
-    return url;
+    return postgres(url, sharedOpts);
   }
 
   if (isProduction()) {
-    throw new Error("DATABASE_URL is required in production.");
+    throw new Error("DATABASE_URL or CLOUD_SQL_INSTANCE is required in production.");
   }
 
   const user = envValue("POSTGRES_USER") ?? "agent_app";
   const password = envValue("POSTGRES_PASSWORD") ?? "agent_app";
   const host = envValue("POSTGRES_HOST_BIND") ?? envValue("POSTGRES_HOST") ?? "127.0.0.1";
-  const port = envValue("POSTGRES_HOST_PORT") ?? "55432";
+  const port = Number(envValue("POSTGRES_HOST_PORT") ?? "55432");
   const database = envValue("POSTGRES_DB") ?? "agent_context";
 
-  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+  return postgres({ ...sharedOpts, host, port, user, password, database });
 }
 
-export const queryClient = postgres(databaseUrl(), {
-  max: 5,
-  prepare: false,
-});
+export const queryClient = makeClient();
 
 export const db = drizzle(queryClient, { schema });

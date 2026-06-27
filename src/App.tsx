@@ -254,6 +254,7 @@ export function App() {
         reflection: current?.reflection ?? { count: 0, latest: null },
         task: data.task,
       }));
+      setDumpText("");
       setScreen("focus");
     },
   });
@@ -769,88 +770,93 @@ function FocusPanel({
 
   return (
     <div className="mx-auto max-w-[430px] md:max-w-[760px]">
-      <div className="mb-6 flex items-center justify-between">
-        <h2 className="font-serif text-4xl text-starlight">Starflow</h2>
+      <div className="mb-3 flex items-center justify-between">
+        <p className="font-bold text-indigo-soft text-xs uppercase tracking-[0.18em]">Focus mode</p>
         <button
           type="button"
-          className="rounded-full border border-white/10 px-3 py-2 text-dim text-xs"
+          className="rounded-full border border-white/10 px-3 py-1.5 text-dim text-xs"
           onClick={onLogout}
         >
           {user.isDemo ? "Demo" : "Account"}
         </button>
       </div>
 
-      <p className="font-bold text-indigo-soft text-xs uppercase tracking-[0.18em] md:text-sm md:tracking-[0.22em]">
-        Focus mode
-      </p>
-      <h3 className="mt-4 font-serif text-4xl text-starlight leading-tight md:mt-6 md:text-5xl">
-        Let's choose what matters now.
-      </h3>
-
-      <div className="glass relative mt-8 rounded-[2rem] p-6 md:mt-10 md:rounded-[2.5rem] md:p-7">
-        <span className="-top-4 absolute rounded-full border border-white/10 bg-void px-5 py-2 font-bold text-dim text-xs uppercase tracking-[0.12em]">
+      <div className="glass relative rounded-[2rem] p-5 md:rounded-[2.5rem] md:p-6">
+        <span className="-top-3.5 absolute rounded-full border border-white/10 bg-void px-4 py-1.5 font-bold text-dim text-xs uppercase tracking-[0.12em]">
           Main focus today
         </span>
-        <div className="mt-8 flex items-start justify-between gap-4">
-          <div>
-            <h4 className="font-serif text-3xl text-starlight leading-tight md:text-4xl">
+        <div className="mt-5 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-serif text-2xl text-starlight leading-tight md:text-3xl">
               {task.title}
-            </h4>
+            </h3>
             {task.whyItMatters ? (
-              <p className="mt-4 text-mist leading-7">{task.whyItMatters}</p>
+              <p className="mt-2 text-mist text-sm leading-6">{task.whyItMatters}</p>
             ) : null}
           </div>
           <button
             type="button"
-            className="grid size-14 shrink-0 place-items-center rounded-full border border-indigo-soft/20 bg-indigo-soft/10 text-indigo-soft"
+            className="grid size-10 shrink-0 place-items-center rounded-full border border-indigo-soft/20 bg-indigo-soft/10 text-indigo-soft"
             onClick={onNewDump}
             aria-label="New dump"
           >
-            <MoreVertical size={22} />
+            <MoreVertical size={18} />
           </button>
-        </div>
-        <div className="mt-7 flex flex-wrap items-center gap-4">
-          <span className="inline-flex items-center gap-2 rounded-full bg-indigo-soft px-5 py-3 font-bold text-indigo-deep">
-            <Zap size={18} />
-            Energy: Low
-          </span>
-          <span className="text-mist">45 mins estimated</span>
         </div>
       </div>
 
-      {firstOpenStep ? (
-        <div className="mt-8 rounded-[2rem] border border-dashed border-white/20 p-5 md:mt-12 md:p-6">
-          <p className="flex items-center gap-3 font-bold text-gold-soft text-sm uppercase tracking-[0.14em]">
-            <span className="size-3 rounded-full bg-gold-soft" />
-            Tiny next step
-          </p>
-          <div className="mt-6 flex items-center justify-between gap-5">
-            <div>
-              <p className="text-xl text-starlight md:text-2xl">{firstOpenStep.content}</p>
-              <p className="mt-3 text-mist italic">It gives your idea shape before building.</p>
-            </div>
+      <div className="mt-3 grid gap-2">
+        {task.steps.map((step) => {
+          const isNext = step.id === firstOpenStep?.id;
+          return (
             <button
               type="button"
-              className="grid size-16 shrink-0 place-items-center rounded-full bg-indigo-soft text-indigo-deep shadow-[0_0_28px_rgba(190,194,255,0.35)]"
-              onClick={() => onToggleStep(firstOpenStep.id, true)}
-              aria-label="Complete tiny next step"
+              key={step.id}
+              className={`flex items-center gap-3 rounded-[1.25rem] p-4 text-left transition ${
+                isNext
+                  ? "border border-gold-soft/40 bg-gold-soft/8 shadow-[0_0_18px_rgba(233,195,73,0.12)]"
+                  : "border border-white/10 bg-white/5"
+              }`}
+              onClick={() => onToggleStep(step.id, !step.done)}
             >
-              <Play size={24} fill="currentColor" />
+              <span
+                className={`grid size-7 shrink-0 place-items-center rounded-full border text-xs font-bold ${
+                  step.done
+                    ? "border-gold-soft bg-gold-soft text-black"
+                    : isNext
+                      ? "border-gold-soft text-gold-soft"
+                      : "border-indigo-soft/60 text-indigo-soft"
+                }`}
+              >
+                {step.done ? <Check size={14} /> : step.position + 1}
+              </span>
+              <span
+                className={`flex-1 text-sm leading-5 ${step.done ? "text-dim line-through" : isNext ? "font-semibold text-starlight" : "text-mist"}`}
+              >
+                {step.content}
+              </span>
+              {isNext && !step.done ? (
+                <span className="shrink-0 grid size-8 place-items-center rounded-full bg-indigo-soft text-indigo-deep shadow-[0_0_14px_rgba(190,194,255,0.35)]">
+                  <Play size={14} fill="currentColor" />
+                </span>
+              ) : null}
             </button>
-          </div>
-        </div>
-      ) : allStepsDone ? (
-        <div className="mt-8 rounded-[2rem] border border-gold-soft/30 bg-gold-soft/10 p-5 md:mt-12 md:p-6">
-          <p className="flex items-center gap-3 font-bold text-gold-soft text-sm uppercase tracking-[0.14em]">
-            <CheckCircle2 size={18} />
+          );
+        })}
+      </div>
+
+      {allStepsDone ? (
+        <div className="mt-4 rounded-[1.5rem] border border-gold-soft/30 bg-gold-soft/10 p-5">
+          <p className="flex items-center gap-2 font-bold text-gold-soft text-sm uppercase tracking-[0.14em]">
+            <CheckCircle2 size={16} />
             Flow complete
           </p>
-          <p className="mt-5 text-xl text-starlight md:text-2xl">
+          <p className="mt-3 text-starlight leading-6">
             The tiny steps are done. Let the win land before choosing more.
           </p>
           <button
             type="button"
-            className="button-glow mt-6 rounded-full bg-gold-soft px-6 py-3 font-bold text-black"
+            className="button-glow mt-4 rounded-full bg-gold-soft px-6 py-2.5 font-bold text-black text-sm"
             onClick={onReflect}
           >
             Reflect
@@ -858,37 +864,12 @@ function FocusPanel({
         </div>
       ) : null}
 
-      <div className="mt-8 grid gap-3">
-        {task.steps.map((step) => (
-          <button
-            type="button"
-            className="flex items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/5 p-4 text-left"
-            key={step.id}
-            onClick={() => onToggleStep(step.id, !step.done)}
-          >
-            <span
-              className={`grid size-8 shrink-0 place-items-center rounded-full border ${
-                step.done
-                  ? "border-gold-soft bg-gold-soft text-black"
-                  : "border-indigo-soft text-indigo-soft"
-              }`}
-            >
-              {step.done ? <Check size={17} /> : step.position + 1}
-            </span>
-            <span className={step.done ? "text-dim line-through" : "text-starlight"}>
-              {step.content}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-8 text-center">
-        <CheckCircle2 className="mx-auto text-dim" size={36} />
-        <p className="mx-auto mt-6 max-w-xs font-bold text-dim leading-7">
+      <div className="mt-5 text-center">
+        <p className="mx-auto max-w-xs text-dim text-sm leading-6">
           {task.encouragement ?? "Perfection is the enemy of the first draft. Just flow."}
         </p>
         {task.otherTasks.length > 0 ? (
-          <p className="mt-4 text-dim text-sm">
+          <p className="mt-2 text-dim text-xs">
             +{task.otherTasks.length} other things noted, set aside for now.
           </p>
         ) : null}

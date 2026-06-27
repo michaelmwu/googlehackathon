@@ -1,6 +1,13 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { GoogleGenAI, Type } from "@google/genai";
-import { and, count, desc, eq } from "drizzle-orm";
+import {
+  type Content,
+  type FunctionCall,
+  FunctionCallingConfigMode,
+  type FunctionDeclaration,
+  GoogleGenAI,
+  Type,
+} from "@google/genai";
+import { and, count, desc, eq, gte, sql } from "drizzle-orm";
 import { OAuth2Client } from "google-auth-library";
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -426,6 +433,8 @@ function triageSchema() {
       },
       tiny_steps: {
         type: Type.ARRAY,
+        description:
+          "5 to 9 ordered micro-steps that move the focus from start to finish. The first step should take about two minutes.",
         items: { type: Type.STRING },
       },
       detected_deadlines: {
@@ -455,13 +464,7 @@ function chatSchema() {
     properties: {
       reply: { type: Type.STRING },
       capture_text: { type: Type.STRING, nullable: true },
-      updated_first_step: { type: Type.STRING, nullable: true },
-      updated_task_title: { type: Type.STRING, nullable: true },
-      updated_steps: {
-        type: Type.ARRAY,
-        nullable: true,
-        items: { type: Type.STRING },
-      },
+      carry_forward: { type: Type.STRING, nullable: true },
       route: { type: Type.STRING, nullable: true },
     },
     required: ["reply"],
@@ -517,44 +520,56 @@ function parseModelJson<T>(text: string | undefined): T {
     throw new Error("Model returned no JSON text.");
   }
 
-  const trimmed = text.trim();
+  const trimmed = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
+  const objectCandidate = trimmed.slice(
+    Math.max(0, trimmed.indexOf("{")),
+    trimmed.lastIndexOf("}") + 1 || trimmed.length,
+  );
+  const candidates = [trimmed, objectCandidate].filter(Boolean);
 
-  try {
-    return JSON.parse(trimmed) as T;
-  } catch (error) {
-    const repaired = trimmed.replace(/\\u(?![0-9a-fA-F]{4})/g, "\\\\u");
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch (error) {
+      const repaired = candidate
+        .replace(/\\u(?![0-9a-fA-F]{4})/g, "\\\\u")
+        .replace(/([{,]\s*)([A-Za-z_][\w-]*)(\s*:)/g, '$1"$2"$3')
+        .replace(/,\s*([}\]])/g, "$1");
 
-    if (repaired !== trimmed) {
-      return JSON.parse(repaired) as T;
+      if (repaired !== candidate) {
+        return JSON.parse(repaired) as T;
+      }
+
+      if (candidate === candidates.at(-1)) {
+        throw error;
+      }
     }
-
-    throw error;
   }
+
+  throw new Error("Model returned no JSON object.");
 }
 
 function normalizeSteps(rawSteps: unknown): string[] {
   if (!Array.isArray(rawSteps)) {
-    return ["Open the thing", "Do the smallest visible part"];
+    return [
+      "Open the relevant app, page, object, or space.",
+      "Name the smallest visible outcome.",
+      "Gather only what is needed for the next move.",
+      "Do the first two-minute action.",
+      "Check what changed and choose the next tiny move.",
+    ];
   }
 
   const steps = rawSteps
     .filter((step): step is string => typeof step === "string")
     .map((step) => step.trim())
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, 10);
 
-  return steps.length > 0 ? steps : ["Open the thing", "Do the smallest visible part"];
-}
-
-function fallbackStepsForTitle(title: string): string[] {
-  return [
-    `Gather what you need for ${title}.`,
-    `Do the smallest visible part of ${title} for five minutes.`,
-  ];
-}
-
-function userAskedForStepRewrite(message: string): boolean {
-  return /\b(todo|to-do|list|steps?|recipe|plan|breakdown)\b/i.test(message);
+  return steps.length > 0 ? steps : normalizeSteps(null);
 }
 
 async function generateFreeform(prompt: string, systemInstruction: string): Promise<string> {
@@ -581,8 +596,10 @@ async function generateTriage(text: string): Promise<TriageResult> {
       systemInstruction: [
         "You help an ADHD person who just brain-dumped.",
         "From their mess, pick the SINGLE most relieving thing to focus on right now, not necessarily the most important.",
-        "Break it into tiny steps where the first is doable in two minutes.",
-        "Be warm and brief. Never lecture. Never produce a long list. Never tell them to just do something.",
+        "Break the focus into 5 to 9 genuinely tiny, concrete steps in order.",
+        "The first step must be doable in about two minutes. Each step is one small physical action.",
+        "Cover the task from start to finish, not just the beginning.",
+        "Be warm and brief. Never lecture. Never tell them to just do something.",
       ].join(" "),
       responseMimeType: "application/json",
       responseSchema: triageSchema(),
@@ -692,18 +709,23 @@ async function updateTaskDetails({
   taskId,
   title,
   userId,
+  whyItMatters,
   steps,
 }: {
   taskId: string;
   title?: string;
+  whyItMatters?: string | null;
   userId: string;
   steps?: string[];
 }) {
   await db.transaction(async (tx) => {
-    if (title) {
+    if (title || whyItMatters !== undefined) {
       await tx
         .update(tasks)
-        .set({ title })
+        .set({
+          ...(title ? { title } : {}),
+          ...(whyItMatters !== undefined ? { whyItMatters } : {}),
+        })
         .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)));
     }
 
@@ -720,26 +742,402 @@ async function updateTaskDetails({
   });
 }
 
-function inferDirectFocusMutation(
-  message: string,
-): { title: string; steps: string[] | undefined } | null {
-  const match = message.match(/\b(?:change|switch|replace)\b.*?\b(?:to|with)\s+([^.!?]+)/i);
-  const target = match?.[1]
-    ?.replace(/\b(?:and|then)\b.*$/i, "")
-    .replace(/\b(?:the|a|an)\b\s+/i, "")
-    .trim();
+function stringArg(args: Record<string, unknown> | undefined, key: string): string | null {
+  const value = args?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
-  if (!target) {
+function numberArg(args: Record<string, unknown> | undefined, key: string): number | null {
+  const value = args?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function booleanArg(args: Record<string, unknown> | undefined, key: string): boolean | null {
+  const value = args?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function stepsArg(args: Record<string, unknown> | undefined): string[] {
+  return normalizeSteps(args?.steps);
+}
+
+function focusToolDeclarations(): FunctionDeclaration[] {
+  return [
+    {
+      name: "rewrite_task",
+      description:
+        "Rename or repurpose the active task. Use when the user asks to change what they are working on.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          why_it_matters: { type: "string" },
+        },
+        required: ["title"],
+      },
+    },
+    {
+      name: "replace_steps",
+      description:
+        "Replace the whole step list with 5 to 9 ordered, concrete, domain-specific micro-steps.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          steps: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+        required: ["steps"],
+      },
+    },
+    {
+      name: "add_step",
+      description: "Add one step after the given zero-based position, or at the end.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          content: { type: "string" },
+          after_position: { type: "number" },
+        },
+        required: ["content"],
+      },
+    },
+    {
+      name: "edit_step",
+      description: "Rewrite one existing step by step id.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          step_id: { type: "string" },
+          content: { type: "string" },
+        },
+        required: ["step_id", "content"],
+      },
+    },
+    {
+      name: "remove_step",
+      description: "Remove one existing step by step id.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          step_id: { type: "string" },
+        },
+        required: ["step_id"],
+      },
+    },
+    {
+      name: "shrink_step",
+      description:
+        "Replace an overwhelming step with a smaller first action. The content must be the smaller action.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          step_id: { type: "string" },
+          content: { type: "string" },
+        },
+        required: ["step_id", "content"],
+      },
+    },
+    {
+      name: "complete_step",
+      description: "Mark one existing step done or not done by step id.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          step_id: { type: "string" },
+          done: { type: "boolean" },
+        },
+        required: ["step_id", "done"],
+      },
+    },
+  ];
+}
+
+function captureToolDeclarations(): FunctionDeclaration[] {
+  return [
+    {
+      name: "set_capture_text",
+      description: "Replace the current capture text with a clearer user-owned version.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+        },
+        required: ["text"],
+      },
+    },
+    {
+      name: "triage_now",
+      description: "Turn the current capture text into a task and step list now.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+        },
+      },
+    },
+  ];
+}
+
+function reflectToolDeclarations(): FunctionDeclaration[] {
+  return [
+    {
+      name: "set_carry_forward",
+      description: "Set the reflection value the user wants to carry into tomorrow.",
+      parametersJsonSchema: {
+        type: "object",
+        properties: {
+          value: { type: "string" },
+        },
+        required: ["value"],
+      },
+    },
+  ];
+}
+
+function toolDeclarationsForAgent(agent: AgentRole): FunctionDeclaration[] {
+  if (agent === "focus") {
+    return focusToolDeclarations();
+  }
+
+  if (agent === "capture") {
+    return captureToolDeclarations();
+  }
+
+  if (agent === "reflect") {
+    return reflectToolDeclarations();
+  }
+
+  return [];
+}
+
+function assertOwnedStep(
+  ownedTask: Awaited<ReturnType<typeof loadOwnedTask>>,
+  stepId: string | null,
+) {
+  if (!ownedTask || !stepId) {
+    throw new Error("Step not found.");
+  }
+
+  const step = ownedTask.steps.find((candidate) => candidate.id === stepId);
+
+  if (!step) {
+    throw new Error("Step not found.");
+  }
+
+  return step;
+}
+
+async function createTaskFromText(userId: string, text: string) {
+  const extracted = await generateTriage(text);
+  const tinySteps = normalizeSteps(extracted.tiny_steps);
+  const title = extracted.main_quest?.title?.trim() || "Choose the next small move";
+  const whyItMatters = extracted.main_quest?.why_it_matters?.trim() || null;
+  const otherTasks = Array.isArray(extracted.other_tasks) ? extracted.other_tasks : [];
+
+  return db.transaction(async (tx) => {
+    const [dump] = await tx
+      .insert(brainDumps)
+      .values({
+        userId,
+        rawText: text,
+        extracted,
+        emotionalTone: extracted.emotional_tone ?? null,
+      })
+      .returning({ id: brainDumps.id });
+
+    if (!dump) {
+      throw new Error("Brain dump insert did not return a row.");
+    }
+
+    const [task] = await tx
+      .insert(tasks)
+      .values({
+        userId,
+        brainDumpId: dump.id,
+        title,
+        whyItMatters,
+        encouragement: extracted.encouragement ?? null,
+        emotionalTone: extracted.emotional_tone ?? null,
+        otherTasks,
+      })
+      .returning();
+
+    if (!task) {
+      throw new Error("Task insert did not return a row.");
+    }
+
+    const insertedSteps = await tx
+      .insert(taskSteps)
+      .values(
+        tinySteps.map((step, position) => ({
+          taskId: task.id,
+          content: step,
+          position,
+        })),
+      )
+      .returning();
+
+    return taskPayload(task, insertedSteps);
+  });
+}
+
+function captureTextFromContext(uiContext: unknown): string | null {
+  if (!uiContext || typeof uiContext !== "object") {
     return null;
   }
 
-  const title = /^(make|cook|prepare|do|write|send|call|clean)\b/i.test(target)
-    ? target.charAt(0).toUpperCase() + target.slice(1)
-    : `Make ${target}`;
+  const value = (uiContext as { dumpText?: unknown }).dumpText;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
+async function executeAgentTool({
+  call,
+  ownedTask,
+  uiContext,
+  user,
+}: {
+  call: FunctionCall;
+  ownedTask: Awaited<ReturnType<typeof loadOwnedTask>>;
+  uiContext: unknown;
+  user: CurrentUser;
+}): Promise<{
+  response: Record<string, unknown>;
+  task: Awaited<ReturnType<typeof loadOpenTask>>;
+  uiPatch: Record<string, unknown>;
+}> {
+  const name = call.name ?? "";
+  const args = call.args ?? {};
+  const uiPatch: Record<string, unknown> = {};
+  let task = ownedTask?.payload ?? null;
+
+  if (name === "set_capture_text") {
+    const text = stringArg(args, "text");
+
+    if (!text) {
+      throw new Error("set_capture_text requires text.");
+    }
+
+    uiPatch.captureText = text;
+    return { response: { ok: true, captureText: text }, task, uiPatch };
+  }
+
+  if (name === "triage_now") {
+    const text = stringArg(args, "text") ?? captureTextFromContext(uiContext);
+
+    if (!text) {
+      throw new Error("triage_now requires text.");
+    }
+
+    task = await createTaskFromText(user.id, text);
+    uiPatch.route = "focus";
+    return { response: { ok: true, task }, task, uiPatch };
+  }
+
+  if (name === "set_carry_forward") {
+    const value = stringArg(args, "value");
+
+    if (!value) {
+      throw new Error("set_carry_forward requires value.");
+    }
+
+    uiPatch.carryForward = value;
+    return { response: { ok: true, carryForward: value }, task, uiPatch };
+  }
+
+  if (!ownedTask) {
+    throw new Error("Focus tool requires a task.");
+  }
+
+  if (name === "rewrite_task") {
+    const title = stringArg(args, "title");
+
+    if (!title) {
+      throw new Error("rewrite_task requires title.");
+    }
+
+    await updateTaskDetails({
+      taskId: ownedTask.task.id,
+      title,
+      userId: user.id,
+      ...(typeof args.why_it_matters === "string"
+        ? { whyItMatters: args.why_it_matters.trim() || null }
+        : {}),
+    });
+  } else if (name === "replace_steps") {
+    await updateTaskDetails({
+      taskId: ownedTask.task.id,
+      userId: user.id,
+      steps: stepsArg(args),
+    });
+  } else if (name === "add_step") {
+    const content = stringArg(args, "content");
+
+    if (!content) {
+      throw new Error("add_step requires content.");
+    }
+
+    const afterPosition = numberArg(args, "after_position");
+    const insertPosition =
+      afterPosition === null
+        ? ownedTask.steps.length
+        : Math.max(0, Math.min(ownedTask.steps.length, Math.floor(afterPosition) + 1));
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(taskSteps)
+        .set({ position: sql`${taskSteps.position} + 1` })
+        .where(
+          and(eq(taskSteps.taskId, ownedTask.task.id), gte(taskSteps.position, insertPosition)),
+        );
+      await tx.insert(taskSteps).values({
+        taskId: ownedTask.task.id,
+        content,
+        position: insertPosition,
+      });
+    });
+  } else if (name === "edit_step" || name === "shrink_step") {
+    const step = assertOwnedStep(ownedTask, stringArg(args, "step_id"));
+    const content = stringArg(args, "content");
+
+    if (!content) {
+      throw new Error(`${name} requires content.`);
+    }
+
+    await db.update(taskSteps).set({ content }).where(eq(taskSteps.id, step.id));
+  } else if (name === "remove_step") {
+    const step = assertOwnedStep(ownedTask, stringArg(args, "step_id"));
+    await db.delete(taskSteps).where(eq(taskSteps.id, step.id));
+  } else if (name === "complete_step") {
+    const step = assertOwnedStep(ownedTask, stringArg(args, "step_id"));
+    const done = booleanArg(args, "done");
+
+    if (done === null) {
+      throw new Error("complete_step requires done.");
+    }
+
+    await db.update(taskSteps).set({ done }).where(eq(taskSteps.id, step.id));
+  } else {
+    throw new Error(`Unknown tool: ${name}`);
+  }
+
+  const reloaded = await loadOwnedTask(user.id, ownedTask.task.id);
+  task = reloaded?.payload ?? task;
+  uiPatch.taskUpdated = true;
   return {
-    title,
-    steps: userAskedForStepRewrite(message) ? fallbackStepsForTitle(title) : undefined,
+    response: {
+      ok: true,
+      task,
+      ...(name === "rewrite_task"
+        ? {
+            nextActionHint:
+              "If the current steps no longer match the rewritten task, call replace_steps before replying.",
+          }
+        : {}),
+    },
+    task,
+    uiPatch,
   };
 }
 
@@ -923,58 +1321,7 @@ app.post("/api/triage", async (c) => {
   }
 
   try {
-    const extracted = await generateTriage(text);
-    const tinySteps = normalizeSteps(extracted.tiny_steps);
-    const title = extracted.main_quest?.title?.trim() || "Choose the next small move";
-    const whyItMatters = extracted.main_quest?.why_it_matters?.trim() || null;
-    const otherTasks = Array.isArray(extracted.other_tasks) ? extracted.other_tasks : [];
-
-    const payload = await db.transaction(async (tx) => {
-      const [dump] = await tx
-        .insert(brainDumps)
-        .values({
-          userId: user.id,
-          rawText: text,
-          extracted,
-          emotionalTone: extracted.emotional_tone ?? null,
-        })
-        .returning({ id: brainDumps.id });
-
-      if (!dump) {
-        throw new Error("Brain dump insert did not return a row.");
-      }
-
-      const [task] = await tx
-        .insert(tasks)
-        .values({
-          userId: user.id,
-          brainDumpId: dump.id,
-          title,
-          whyItMatters,
-          encouragement: extracted.encouragement ?? null,
-          emotionalTone: extracted.emotional_tone ?? null,
-          otherTasks,
-        })
-        .returning();
-
-      if (!task) {
-        throw new Error("Task insert did not return a row.");
-      }
-
-      const insertedSteps = await tx
-        .insert(taskSteps)
-        .values(
-          tinySteps.map((step, position) => ({
-            taskId: task.id,
-            content: step,
-            position,
-          })),
-        )
-        .returning();
-
-      return taskPayload(task, insertedSteps);
-    });
-
+    const payload = await createTaskFromText(user.id, text);
     return c.json({ task: payload });
   } catch (error) {
     logServerError("Triage failed.", error);
@@ -1290,6 +1637,7 @@ app.post("/api/chat", async (c) => {
     return uiContextJson;
   }
 
+  const uiContext = body.uiContext;
   let ownedTask: Awaited<ReturnType<typeof loadOwnedTask>> | null = null;
 
   if (agent === "focus") {
@@ -1304,30 +1652,6 @@ app.post("/api/chat", async (c) => {
     }
   }
 
-  if (agent === "focus" && ownedTask) {
-    const directMutation = inferDirectFocusMutation(message);
-
-    if (directMutation) {
-      const update = {
-        taskId: ownedTask.task.id,
-        title: directMutation.title,
-        userId: user.id,
-        ...(directMutation.steps ? { steps: directMutation.steps } : {}),
-      };
-
-      await updateTaskDetails(update);
-      const reloaded = await loadOwnedTask(user.id, ownedTask.task.id);
-
-      return c.json({
-        reply: directMutation.steps
-          ? `Updated it to ${directMutation.title} and refreshed the steps.`
-          : `Updated it to ${directMutation.title}.`,
-        uiPatch: { taskUpdated: true },
-        task: reloaded?.payload ?? ownedTask.payload,
-      });
-    }
-  }
-
   if (!hasUsableCredentials()) {
     return c.json({ error: "Gemini is not configured yet." }, 503);
   }
@@ -1338,21 +1662,20 @@ app.post("/api/chat", async (c) => {
     signin:
       "You are the Starflow sign-in guide. Be calm and practical. Explain demo mode vs Google sign-in in one or two sentences. Never pretend to authenticate the user.",
     capture:
-      "You are Record and Translate. Convert voice/image/text-like mess into clear user-owned words without prioritizing yet. If the user asks you to rewrite their dump, return capture_text with a gentler clearer version.",
+      "You are Record and Translate. Convert voice/image/text-like mess into clear user-owned words without prioritizing yet. Use set_capture_text when the user asks to rewrite the dump. Use triage_now when they ask to turn it into a task.",
     focus:
-      "You are Receiving Adjustments and Changing Tasks, with Prioritization and Breakdown support. The user is working on the task below. If they explicitly ask to change, replace, rename, or adjust the task, return updated_task_title and/or updated_steps so the UI changes. If they say the next move is too much, shrink the first incomplete step and return updated_first_step. Keep replies to 1-3 sentences.",
+      "You are Receiving Adjustments and Changing Tasks, with Prioritization and Breakdown support. Use tools for visible task changes. If the user asks to change, replace, rename, or adjust the task, call rewrite_task. If they ask to redo the todo list, plan, recipe, or steps, call replace_steps with real domain-specific steps. If they say a step is too much, call shrink_step.",
     reflect:
-      "You are Prioritizer for reflection. Help the user notice one meaningful signal from the day and choose what to carry tomorrow. Do not alter tasks.",
+      "You are Prioritizer for reflection. Help the user notice one meaningful signal from the day and choose what to carry tomorrow. Use set_carry_forward when the user explicitly names what to carry.",
   }[agent];
 
   const prompt = [
-    "Return JSON matching the schema.",
     `Agent: ${agent}`,
     `Instruction: ${roleInstruction}`,
     "Agent boundaries: Context normalizes available context; Task Extraction detects actionable tasks; Prioritization ranks selected active tasks; Breakdown rewrites executable subtasks. Do not invent unrelated work.",
-    "Mutation rule: when the user asks for a visible task/list change, return the matching update fields instead of only chatting about it.",
-    "If updated_task_title changes the task topic and the user asks to update the todo list, plan, recipe, or steps, updated_steps is required.",
-    "Example: if the active task is a recipe and the user says 'change it to pasta and update the todo list', return updated_task_title like 'Make pasta' plus updated_steps for pasta.",
+    "Mutation rule: when the user asks for a visible task/list change, call a tool instead of only chatting about it.",
+    "Step-list rule: replacement step lists should contain 5 to 9 ordered micro-steps. Make them specific to the user's actual task, recipe, object, or context.",
+    "Example: if the active task is a recipe and the user says 'change it to pasta and update the todo list', call rewrite_task and replace_steps with real pasta steps.",
     `User: ${user.displayName ?? user.email}`,
     ownedTask
       ? `Task: ${ownedTask.payload.title}\nWhy: ${ownedTask.payload.whyItMatters ?? "not set"}\nSteps:\n${ownedTask.payload.steps
@@ -1365,83 +1688,122 @@ app.post("/api/chat", async (c) => {
 
   try {
     const client = createClient();
-    const response = await client.models.generateContent({
+    const toolDeclarations = toolDeclarationsForAgent(agent);
+    let updatedTask = ownedTask?.payload ?? null;
+    const uiPatch: Record<string, unknown> = {};
+
+    if (toolDeclarations.length > 0) {
+      let contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+      let reply = "";
+
+      for (let round = 0; round < 3; round += 1) {
+        const response = await client.models.generateContent({
+          model: modelName(),
+          contents,
+          config: {
+            systemInstruction:
+              "You are a Starflow page-specific agent. Respect the page role. Use declared tools for UI or database changes. Be brief and do not invent hidden state.",
+            toolConfig: {
+              functionCallingConfig: {
+                mode: FunctionCallingConfigMode.AUTO,
+              },
+            },
+            tools: [{ functionDeclarations: toolDeclarations }],
+            temperature: 0.45,
+            maxOutputTokens: 700,
+          },
+        });
+        const functionCalls = response.functionCalls ?? [];
+
+        if (functionCalls.length === 0) {
+          reply = response.text?.trim() ?? "";
+          break;
+        }
+
+        const functionResponseParts = [];
+
+        for (const call of functionCalls) {
+          const result = await executeAgentTool({
+            call,
+            ownedTask,
+            uiContext,
+            user,
+          });
+
+          Object.assign(uiPatch, result.uiPatch);
+          updatedTask = result.task ?? updatedTask;
+          if (ownedTask) {
+            ownedTask = (await loadOwnedTask(user.id, ownedTask.task.id)) ?? ownedTask;
+          }
+          functionResponseParts.push({
+            functionResponse: {
+              name: call.name ?? "unknown_tool",
+              response: result.response,
+            },
+          });
+        }
+
+        contents = [
+          ...contents,
+          {
+            role: "model",
+            parts: functionCalls.map((call) => ({ functionCall: call })),
+          },
+          { role: "user", parts: functionResponseParts },
+        ];
+      }
+
+      if (!reply) {
+        const finalResponse = await client.models.generateContent({
+          model: modelName(),
+          contents,
+          config: {
+            systemInstruction:
+              "Write one concise Starflow reply after the tools ran. Mention what changed only if useful. Do not output JSON.",
+            temperature: 0.35,
+            maxOutputTokens: 240,
+          },
+        });
+        reply = finalResponse.text?.trim() ?? "";
+      }
+
+      return c.json({
+        reply: reply || "Done. I updated the screen.",
+        uiPatch,
+        task: updatedTask,
+      });
+    }
+
+    const firstResponse = await client.models.generateContent({
       model: modelName(),
-      contents: prompt,
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         systemInstruction:
-          "You are a Starflow page-specific agent. Respect the page role and only return allowed UI patches. Be brief and do not invent hidden state.",
+          "You are a Starflow page-specific agent. Respect the page role. Use declared tools for UI or database changes. Be brief and do not invent hidden state.",
         responseMimeType: "application/json",
         responseSchema: chatSchema(),
         temperature: 0.45,
         maxOutputTokens: 700,
       },
     });
+
     const parsed = parseModelJson<{
       reply?: string;
       capture_text?: string | null;
-      updated_first_step?: string | null;
-      updated_task_title?: string | null;
-      updated_steps?: string[] | null;
+      carry_forward?: string | null;
       route?: string | null;
-    }>(response.text);
-    let updatedTask = ownedTask?.payload ?? null;
-    const uiPatch: Record<string, unknown> = {};
+    }>(firstResponse.text);
 
     if (agent === "capture" && parsed.capture_text) {
       uiPatch.captureText = parsed.capture_text;
     }
 
+    if (agent === "reflect" && parsed.carry_forward) {
+      uiPatch.carryForward = parsed.carry_forward;
+    }
+
     if (agent === "landing" && parsed.route === "capture") {
       uiPatch.route = "capture";
-    }
-
-    if (agent === "focus" && parsed.updated_first_step && ownedTask) {
-      const target = ownedTask.steps.find((step) => !step.done);
-
-      if (target) {
-        await db
-          .update(taskSteps)
-          .set({ content: parsed.updated_first_step })
-          .where(eq(taskSteps.id, target.id));
-        const reloaded = await loadOwnedTask(user.id, ownedTask.task.id);
-        updatedTask = reloaded?.payload ?? updatedTask;
-        uiPatch.updatedStepId = target.id;
-      }
-    }
-
-    if (agent === "focus" && ownedTask) {
-      const updatedTitle = parsed.updated_task_title?.trim();
-      const updatedSteps = Array.isArray(parsed.updated_steps)
-        ? parsed.updated_steps
-            .filter((step): step is string => typeof step === "string")
-            .map((step) => step.trim())
-            .filter(Boolean)
-            .slice(0, 4)
-        : [];
-      const replacementSteps =
-        updatedSteps.length > 0
-          ? updatedSteps
-          : updatedTitle && userAskedForStepRewrite(message)
-            ? fallbackStepsForTitle(updatedTitle)
-            : [];
-      const shouldUpdateTitle = Boolean(updatedTitle);
-      const shouldReplaceSteps = replacementSteps.length > 0;
-
-      if (shouldUpdateTitle || shouldReplaceSteps) {
-        const update = {
-          taskId: ownedTask.task.id,
-          userId: user.id,
-          ...(updatedTitle ? { title: updatedTitle } : {}),
-          ...(shouldReplaceSteps ? { steps: replacementSteps } : {}),
-        };
-
-        await updateTaskDetails(update);
-
-        const reloaded = await loadOwnedTask(user.id, ownedTask.task.id);
-        updatedTask = reloaded?.payload ?? updatedTask;
-        uiPatch.taskUpdated = true;
-      }
     }
 
     return c.json({
