@@ -15,8 +15,44 @@ const systemInstruction = [
   "When useful, structure the response as short sections or bullets.",
 ].join(" ");
 
+function envValue(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
 function envFlag(name: string): boolean {
-  return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").toLowerCase());
+  return ["1", "true", "yes", "on"].includes((envValue(name) ?? "").toLowerCase());
+}
+
+function modelName(): string {
+  return envValue("GEMINI_MODEL") ?? DEFAULT_MODEL;
+}
+
+function parsePort(rawPort: string | undefined): number {
+  const defaultPort = 3000;
+
+  if (!rawPort || rawPort.trim().length === 0) {
+    return defaultPort;
+  }
+
+  const portCandidate = rawPort.trim();
+
+  if (!/^\d+$/.test(portCandidate)) {
+    return defaultPort;
+  }
+
+  const parsedPort = Number(portCandidate);
+
+  if (!Number.isSafeInteger(parsedPort) || parsedPort < 1 || parsedPort > 65_535) {
+    return defaultPort;
+  }
+
+  return parsedPort;
+}
+
+function logServerError(message: string, error: unknown): void {
+  // biome-ignore lint/suspicious/noConsole: Server-side diagnostics belong in Cloud Run logs.
+  console.error(message, error);
 }
 
 function configuredProvider(): string {
@@ -29,15 +65,15 @@ function configuredProvider(): string {
 
 function hasUsableCredentials(): boolean {
   if (envFlag("GOOGLE_GENAI_USE_ENTERPRISE")) {
-    return Boolean(process.env.GOOGLE_CLOUD_PROJECT);
+    return Boolean(envValue("GOOGLE_CLOUD_PROJECT"));
   }
 
-  return Boolean(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY);
+  return Boolean(envValue("GEMINI_API_KEY") ?? envValue("GOOGLE_API_KEY"));
 }
 
 function createClient(): GoogleGenAI {
   if (envFlag("GOOGLE_GENAI_USE_ENTERPRISE")) {
-    const project = process.env.GOOGLE_CLOUD_PROJECT;
+    const project = envValue("GOOGLE_CLOUD_PROJECT");
 
     if (!project) {
       throw new Error("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_ENTERPRISE=true.");
@@ -46,12 +82,12 @@ function createClient(): GoogleGenAI {
     return new GoogleGenAI({
       enterprise: true,
       project,
-      location: process.env.GOOGLE_CLOUD_LOCATION ?? "global",
+      location: envValue("GOOGLE_CLOUD_LOCATION") ?? "global",
       apiVersion: "v1",
     });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  const apiKey = envValue("GEMINI_API_KEY") ?? envValue("GOOGLE_API_KEY");
 
   if (!apiKey) {
     throw new Error("Set GEMINI_API_KEY or GOOGLE_API_KEY for local Gemini Developer API use.");
@@ -90,9 +126,8 @@ async function parseJsonRequest(request: Request): Promise<GenerateRequest> {
 
 async function generateText(prompt: string): Promise<string> {
   const client = createClient();
-  const model = process.env.GEMINI_MODEL ?? DEFAULT_MODEL;
   const response = await client.models.generateContent({
-    model,
+    model: modelName(),
     contents: prompt,
     config: {
       systemInstruction,
@@ -134,12 +169,13 @@ async function handleGenerate(request: Request): Promise<Response> {
     const text = await generateText(prompt);
     return json(200, {
       text,
-      model: process.env.GEMINI_MODEL ?? DEFAULT_MODEL,
+      model: modelName(),
       provider: configuredProvider(),
     });
   } catch (error) {
+    logServerError("Gemini request failed.", error);
     return json(502, {
-      error: error instanceof Error ? error.message : "Gemini request failed.",
+      error: "Gemini request failed. Check the server logs for details.",
     });
   }
 }
@@ -166,7 +202,7 @@ function handleRequest(request: Request): Promise<Response> | Response {
   return json(404, { error: "Not found." });
 }
 
-const port = Number(process.env.PORT ?? "3000");
+const port = parsePort(process.env.PORT);
 
 Bun.serve({
   hostname: "0.0.0.0",

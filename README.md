@@ -60,6 +60,8 @@ GEMINI_MODEL=gemini-2.5-flash
 
 ## Deploy
 
+The examples below use `--allow-unauthenticated` for fast public hackathon demos. For production, remove that flag and put authentication, rate limiting, quota controls, or an application gateway in front of `/api/generate` to avoid unexpected Gemini spend or abuse.
+
 Build and deploy from source with Google Cloud Buildpacks:
 
 ```bash
