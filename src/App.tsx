@@ -5,11 +5,16 @@ import {
   Check,
   CheckCircle2,
   Compass,
+  Lightbulb,
   LogOut,
   MessageCircle,
+  Mic,
   Moon,
+  MoreVertical,
+  Play,
   Sparkles,
   Stars,
+  Zap,
 } from "lucide-react";
 import {
   type Dispatch,
@@ -139,7 +144,9 @@ const featureCards = [
 
 export function App() {
   const queryClient = useQueryClient();
-  const [screen, setScreen] = useState<Screen>("landing");
+  const [screen, setScreen] = useState<Screen>(() =>
+    window.location.pathname === "/app" ? "signin" : "landing",
+  );
   const [dumpText, setDumpText] = useState("");
   const [supportLine] = useState(
     () =>
@@ -176,6 +183,15 @@ export function App() {
 
   const user = meQuery.data?.user ?? null;
   const task = stateQuery.data?.task ?? null;
+
+  useEffect(() => {
+    const onPopState = () => {
+      setScreen(window.location.pathname === "/app" ? (user ? "capture" : "signin") : "landing");
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [user]);
 
   useEffect(() => {
     if (meQuery.isLoading || stateQuery.isLoading) {
@@ -294,78 +310,84 @@ export function App() {
 
   const currentAgent: Screen = task && screen === "focus" ? "focus" : screen;
   const enterFlow = () => {
+    if (window.location.pathname !== "/app") {
+      window.history.pushState(null, "", "/app");
+    }
     setScreen(user ? (task ? "focus" : "capture") : "signin");
-    window.requestAnimationFrame(() => {
-      document.getElementById("app")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
   };
 
   return (
     <div className="min-h-screen overflow-x-hidden text-starlight">
       <TopNav user={user} onTry={enterFlow} onLogout={() => logoutMutation.mutate()} />
 
-      <Landing onTry={enterFlow} />
+      {screen === "landing" ? (
+        <>
+          <Landing onTry={enterFlow} />
+          <FinalCta onTry={enterFlow} />
+        </>
+      ) : (
+        <section
+          id="app"
+          className="mx-auto min-h-[calc(100svh-64px)] w-[min(1120px,calc(100vw-32px))] py-8 md:py-20"
+        >
+          <div className="mx-auto mb-6 hidden max-w-[720px] text-center md:block">
+            <h2 className="font-serif text-4xl text-indigo-soft md:text-5xl">Try the loop now.</h2>
+            <p className="mt-4 text-mist">
+              Dump the mess, get one main quest, and let the page agent shrink the plan when it
+              feels too large.
+            </p>
+          </div>
 
-      <section id="app" className="mx-auto w-[min(1120px,calc(100vw-32px))] py-20">
-        <div className="mx-auto mb-8 max-w-[720px] text-center">
-          <h2 className="font-serif text-4xl text-indigo-soft md:text-5xl">Try the loop now.</h2>
-          <p className="mt-4 text-mist">
-            Dump the mess, get one main quest, and let the page agent shrink the plan when it feels
-            too large.
-          </p>
-        </div>
+          {!user ? (
+            <SigninPanel
+              config={configQuery.data}
+              demoPending={demoMutation.isPending}
+              googlePending={googleMutation.isPending}
+              error={demoMutation.error?.message ?? googleMutation.error?.message}
+              onDemo={() => demoMutation.mutate()}
+              onGoogleCredential={(credential) => googleMutation.mutate(credential)}
+            />
+          ) : null}
 
-        {!user && screen !== "landing" ? (
-          <SigninPanel
-            config={configQuery.data}
-            demoPending={demoMutation.isPending}
-            googlePending={googleMutation.isPending}
-            error={demoMutation.error?.message ?? googleMutation.error?.message}
-            onDemo={() => demoMutation.mutate()}
-            onGoogleCredential={(credential) => googleMutation.mutate(credential)}
-          />
-        ) : null}
+          {user && screen === "capture" ? (
+            <CapturePanel
+              dumpText={dumpText}
+              error={triageMutation.error?.message}
+              loading={triageMutation.isPending}
+              line={supportLine}
+              model={configQuery.data?.model ?? "gemini-2.5-flash"}
+              user={user}
+              onChange={setDumpText}
+              onSubmit={() => triageMutation.mutate(dumpText)}
+              onLogout={() => logoutMutation.mutate()}
+            />
+          ) : null}
 
-        {user && screen === "capture" ? (
-          <CapturePanel
-            dumpText={dumpText}
-            error={triageMutation.error?.message}
-            loading={triageMutation.isPending}
-            line={supportLine}
-            model={configQuery.data?.model ?? "gemini-2.5-flash"}
-            user={user}
-            onChange={setDumpText}
-            onSubmit={() => triageMutation.mutate(dumpText)}
-            onLogout={() => logoutMutation.mutate()}
-          />
-        ) : null}
+          {user && screen === "focus" && task ? (
+            <FocusPanel
+              task={task}
+              user={user}
+              onNewDump={() => setScreen("capture")}
+              onToggleStep={(stepId, done) => toggleStepMutation.mutate({ stepId, done })}
+              onLogout={() => logoutMutation.mutate()}
+            />
+          ) : null}
 
-        {user && screen === "focus" && task ? (
-          <FocusPanel
-            task={task}
-            user={user}
-            onNewDump={() => setScreen("capture")}
-            onToggleStep={(stepId, done) => toggleStepMutation.mutate({ stepId, done })}
-            onLogout={() => logoutMutation.mutate()}
-          />
-        ) : null}
-
-        {user && screen === "reflect" ? (
-          <ReflectPanel
-            answers={reflectionAnswers}
-            error={reflectionMutation.error?.message}
-            latest={stateQuery.data?.reflection.latest ?? null}
-            loading={reflectionMutation.isPending}
-            reflectionCount={stateQuery.data?.reflection.count ?? 0}
-            user={user}
-            onAnswers={setReflectionAnswers}
-            onLogout={() => logoutMutation.mutate()}
-            onSubmit={() => reflectionMutation.mutate()}
-          />
-        ) : null}
-      </section>
-
-      <FinalCta onTry={enterFlow} />
+          {user && screen === "reflect" ? (
+            <ReflectPanel
+              answers={reflectionAnswers}
+              error={reflectionMutation.error?.message}
+              latest={stateQuery.data?.reflection.latest ?? null}
+              loading={reflectionMutation.isPending}
+              reflectionCount={stateQuery.data?.reflection.count ?? 0}
+              user={user}
+              onAnswers={setReflectionAnswers}
+              onLogout={() => logoutMutation.mutate()}
+              onSubmit={() => reflectionMutation.mutate()}
+            />
+          ) : null}
+        </section>
+      )}
 
       <AgentDrawer
         agent={currentAgent}
@@ -383,7 +405,9 @@ export function App() {
           }
         }}
       />
-      {user ? <BottomNav screen={screen} task={task} onScreen={setScreen} /> : null}
+      {user && screen !== "landing" ? (
+        <BottomNav screen={screen} task={task} onScreen={setScreen} />
+      ) : null}
     </div>
   );
 }
@@ -438,27 +462,37 @@ function TopNav({
 function Landing({ onTry }: { onTry: () => void }) {
   return (
     <main>
-      <section className="hero-backdrop relative grid min-h-[760px] place-items-center px-6 py-28 text-center opacity-95">
+      <section className="hero-backdrop relative grid min-h-[calc(100svh-64px)] place-items-center px-6 py-14 text-center opacity-95 md:min-h-[760px] md:py-28">
         <div className="mx-auto max-w-[720px]">
-          <h1 className="bg-gradient-to-br from-starlight to-indigo-soft bg-clip-text font-serif font-semibold text-5xl text-transparent leading-tight md:text-7xl">
-            Turn scattered thoughts into steady flow.
+          <div className="mx-auto mb-8 grid size-20 place-items-center rounded-full border border-indigo-soft/20 bg-indigo-soft/10 md:hidden">
+            <Sparkles className="text-indigo-soft" size={34} />
+          </div>
+          <h1 className="bg-gradient-to-br from-starlight to-indigo-soft bg-clip-text font-serif font-semibold text-4xl text-transparent leading-tight md:text-7xl">
+            <span className="md:hidden">Welcome to Starflow</span>
+            <span className="hidden md:inline">Turn scattered thoughts into steady flow.</span>
           </h1>
-          <p className="mx-auto mt-6 max-w-[620px] text-lg text-mist leading-8">
-            Starflow is an AI companion for ADHD minds, helping you capture everything racing
-            through your brain, choose what matters now, and build self-trust one small step at a
-            time.
+          <p className="mx-auto mt-6 max-w-[620px] text-mist text-xl leading-9 md:text-lg md:leading-8">
+            <span className="md:hidden">
+              A gentle place to capture your thoughts, find your next step, and return to yourself.
+            </span>
+            <span className="hidden md:inline">
+              Starflow is an AI companion for ADHD minds, helping you capture everything racing
+              through your brain, choose what matters now, and build self-trust one small step at a
+              time.
+            </span>
           </p>
           <div className="mt-9 flex flex-col justify-center gap-4 md:flex-row">
             <button
               type="button"
-              className="button-glow inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-indigo-deep to-indigo-soft/40 px-8 py-4 font-bold text-indigo-soft"
+              className="button-glow inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-indigo-deep to-indigo-soft/60 px-10 py-4 font-bold text-indigo-soft"
               onClick={onTry}
             >
               <Sparkles size={18} />
-              Try the Starflow loop
+              <span className="md:hidden">Begin gently</span>
+              <span className="hidden md:inline">Try the Starflow loop</span>
             </button>
             <a
-              className="button-glow inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-8 py-4 font-bold text-starlight"
+              className="hidden items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-8 py-4 font-bold text-starlight button-glow md:inline-flex"
               href="#method"
             >
               Watch the method
@@ -468,7 +502,7 @@ function Landing({ onTry }: { onTry: () => void }) {
         </div>
       </section>
 
-      <section className="mx-auto w-[min(720px,calc(100vw-48px))] py-16">
+      <section className="mx-auto hidden w-[min(720px,calc(100vw-48px))] py-16 md:block">
         <div className="glass rounded-[2rem] p-8 text-center md:p-11">
           <h2 className="font-serif text-3xl text-indigo-soft md:text-4xl">
             For minds that move faster than life can organize.
@@ -483,7 +517,10 @@ function Landing({ onTry }: { onTry: () => void }) {
         </div>
       </section>
 
-      <section id="method" className="mx-auto w-[min(720px,calc(100vw-48px))] py-16">
+      <section
+        id="method"
+        className="mx-auto hidden w-[min(720px,calc(100vw-48px))] py-16 md:block"
+      >
         <h2 className="text-center font-serif text-4xl text-indigo-soft">
           Scatter, Flow, Reflect.
         </h2>
@@ -498,7 +535,10 @@ function Landing({ onTry }: { onTry: () => void }) {
         </div>
       </section>
 
-      <section id="features" className="mx-auto w-[min(720px,calc(100vw-48px))] py-16">
+      <section
+        id="features"
+        className="mx-auto hidden w-[min(720px,calc(100vw-48px))] py-16 md:block"
+      >
         <h2 className="text-center font-serif text-4xl text-indigo-soft">
           Designed for executive function.
         </h2>
@@ -623,22 +663,60 @@ function CapturePanel({
   }, []);
 
   return (
-    <div className="glass mx-auto max-w-[900px] rounded-[2rem] p-5 md:p-8">
-      <PanelHeader user={user} model={model} onLogout={onLogout} />
-      <div className="mt-6 grid gap-5 md:grid-cols-[0.9fr_1.1fr]">
-        <div>
-          <h3 className="font-serif text-4xl text-indigo-soft">What is on your mind?</h3>
-          <p className="mt-4 text-mist leading-7">{line}</p>
-          <p className="mt-6 text-dim text-sm">
-            Cmd/Ctrl+Enter sends this to Starflow. No tags, categories, or maintenance.
-          </p>
+    <div className="mx-auto max-w-[430px] md:max-w-[900px]">
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Sparkles className="text-indigo-soft" size={28} />
+          <h2 className="font-serif text-4xl text-starlight">Starflow</h2>
         </div>
-        <div>
+        <button
+          type="button"
+          className="rounded-full border border-white/10 px-3 py-2 text-dim text-xs"
+          onClick={onLogout}
+        >
+          {user.isDemo ? "Demo" : "Account"}
+        </button>
+      </div>
+
+      <div className="relative overflow-hidden rounded-[2.5rem] border border-white/10 bg-indigo-soft/10 p-6 md:p-8">
+        <div className="pointer-events-none absolute -right-24 -top-20 size-72 rounded-full bg-indigo-soft/20 blur-3xl" />
+        <div className="relative">
+          <p className="font-bold text-indigo-soft text-xs uppercase tracking-[0.22em]">
+            Record and translate
+          </p>
+          <h3 className="mt-6 font-serif text-5xl text-starlight leading-tight">
+            What's on your mind?
+          </h3>
+          <p className="mt-4 text-mist leading-7">{line}</p>
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3">
+        {[
+          { icon: Lightbulb, text: "I want to build an app.", meta: "Creative spark" },
+          { icon: Compass, text: "I forgot to reply to someone.", meta: "Life admin" },
+          { icon: Bot, text: "I feel overwhelmed.", meta: "Emotional spark" },
+        ].map((spark) => (
+          <div className="glass flex items-center gap-4 rounded-[2rem] p-4" key={spark.text}>
+            <div className="grid size-14 place-items-center rounded-full bg-indigo-soft/20 text-indigo-soft">
+              <spark.icon size={22} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-semibold text-starlight">"{spark.text}"</p>
+              <p className="mt-1 text-dim text-sm">{spark.meta}</p>
+            </div>
+            <MoreVertical className="text-dim" size={18} />
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-5 glass rounded-[2rem] p-4">
+        <div className="relative">
           <textarea
             ref={textareaRef}
-            className="min-h-72 w-full resize-y rounded-[1.5rem] border border-white/10 bg-white/5 p-5 text-starlight outline-none transition focus:border-indigo-soft focus:shadow-[0_0_20px_rgba(190,194,255,0.18)]"
+            className="min-h-32 w-full resize-y rounded-[1.5rem] border border-white/10 bg-white/5 p-5 pr-14 text-starlight outline-none transition focus:border-indigo-soft focus:shadow-[0_0_20px_rgba(190,194,255,0.18)]"
             maxLength={8000}
-            placeholder="Type the pile here..."
+            placeholder="Type a spark of thought..."
             value={dumpText}
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={(event) => {
@@ -647,19 +725,22 @@ function CapturePanel({
               }
             }}
           />
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-dim text-sm">{dumpText.length} / 8000</span>
-            <button
-              type="button"
-              className="button-glow inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-deep to-indigo-soft/40 px-7 py-3 font-bold text-indigo-soft"
-              disabled={loading || dumpText.trim().length === 0}
-              onClick={onSubmit}
-            >
-              {loading ? "Sorting the noise..." : "Find my focus"}
-            </button>
-          </div>
-          {error ? <p className="mt-4 text-red-200 text-sm">{error}</p> : null}
+          <Mic className="absolute right-5 top-5 text-dim" size={22} />
         </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-dim text-sm">{dumpText.length} / 8000</span>
+          <span className="text-dim text-xs">{model}</span>
+        </div>
+        <button
+          type="button"
+          className="button-glow mt-4 inline-flex w-full items-center justify-center gap-3 rounded-full bg-gradient-to-r from-indigo-deep to-indigo-soft px-7 py-5 font-bold text-indigo-deep"
+          disabled={loading || dumpText.trim().length === 0}
+          onClick={onSubmit}
+        >
+          <Zap size={20} />
+          {loading ? "Sorting the noise..." : "Capture Spark"}
+        </button>
+        {error ? <p className="mt-4 text-red-200 text-sm">{error}</p> : null}
       </div>
     </div>
   );
@@ -678,57 +759,107 @@ function FocusPanel({
   task: FocusTask;
   user: User;
 }) {
+  const firstOpenStep = task.steps.find((step) => !step.done) ?? task.steps[0];
+
   return (
-    <div className="glass mx-auto max-w-[900px] rounded-[2rem] p-5 md:p-8">
-      <PanelHeader user={user} model="focus" onLogout={onLogout} />
-      <div className="mt-7">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="max-w-2xl">
-            <p className="font-bold text-dim text-sm uppercase tracking-[0.18em]">Main quest</p>
-            <h3 className="mt-3 font-serif text-4xl text-indigo-soft leading-tight md:text-5xl">
-              {task.title}
-            </h3>
+    <div className="mx-auto max-w-[430px] md:max-w-[760px]">
+      <div className="mb-6 flex items-center justify-between">
+        <h2 className="font-serif text-4xl text-starlight">Starflow</h2>
+        <button
+          type="button"
+          className="rounded-full border border-white/10 px-3 py-2 text-dim text-xs"
+          onClick={onLogout}
+        >
+          {user.isDemo ? "Demo" : "Account"}
+        </button>
+      </div>
+
+      <p className="font-bold text-indigo-soft text-sm uppercase tracking-[0.22em]">Focus mode</p>
+      <h3 className="mt-6 font-serif text-5xl text-starlight leading-tight">
+        Let's choose what matters now.
+      </h3>
+
+      <div className="glass relative mt-10 rounded-[2.5rem] p-7">
+        <span className="-top-4 absolute rounded-full border border-white/10 bg-void px-5 py-2 font-bold text-dim text-xs uppercase tracking-[0.12em]">
+          Main focus today
+        </span>
+        <div className="mt-8 flex items-start justify-between gap-4">
+          <div>
+            <h4 className="font-serif text-4xl text-starlight leading-tight">{task.title}</h4>
             {task.whyItMatters ? (
               <p className="mt-4 text-mist leading-7">{task.whyItMatters}</p>
             ) : null}
           </div>
           <button
             type="button"
-            className="rounded-full border border-white/10 px-4 py-2 text-mist text-sm"
+            className="grid size-14 shrink-0 place-items-center rounded-full border border-indigo-soft/20 bg-indigo-soft/10 text-indigo-soft"
             onClick={onNewDump}
+            aria-label="New dump"
           >
-            New dump
+            <MoreVertical size={22} />
           </button>
         </div>
+        <div className="mt-7 flex flex-wrap items-center gap-4">
+          <span className="inline-flex items-center gap-2 rounded-full bg-indigo-soft px-5 py-3 font-bold text-indigo-deep">
+            <Zap size={18} />
+            Energy: Low
+          </span>
+          <span className="text-mist">45 mins estimated</span>
+        </div>
+      </div>
 
-        <div className="mt-8 grid gap-3">
-          {task.steps.map((step) => (
+      {firstOpenStep ? (
+        <div className="mt-12 rounded-[2rem] border border-dashed border-white/20 p-6">
+          <p className="flex items-center gap-3 font-bold text-gold-soft text-sm uppercase tracking-[0.14em]">
+            <span className="size-3 rounded-full bg-gold-soft" />
+            Tiny next step
+          </p>
+          <div className="mt-6 flex items-center justify-between gap-5">
+            <div>
+              <p className="text-2xl text-starlight">{firstOpenStep.content}</p>
+              <p className="mt-3 text-mist italic">It gives your idea shape before building.</p>
+            </div>
             <button
               type="button"
-              className="flex items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/5 p-4 text-left"
-              key={step.id}
-              onClick={() => onToggleStep(step.id, !step.done)}
+              className="grid size-16 shrink-0 place-items-center rounded-full bg-indigo-soft text-indigo-deep shadow-[0_0_28px_rgba(190,194,255,0.35)]"
+              onClick={() => onToggleStep(firstOpenStep.id, true)}
+              aria-label="Complete tiny next step"
             >
-              <span
-                className={`grid size-8 shrink-0 place-items-center rounded-full border ${
-                  step.done
-                    ? "border-gold-soft bg-gold-soft text-black"
-                    : "border-indigo-soft text-indigo-soft"
-                }`}
-              >
-                {step.done ? <Check size={17} /> : step.position + 1}
-              </span>
-              <span className={step.done ? "text-dim line-through" : "text-starlight"}>
-                {step.content}
-              </span>
+              <Play size={24} fill="currentColor" />
             </button>
-          ))}
+          </div>
         </div>
+      ) : null}
 
-        <div className="mt-6 rounded-[1.5rem] border border-gold-soft/20 bg-gold-soft/10 p-4 text-gold-soft">
-          {task.encouragement ?? "You only need the next visible move."}
-        </div>
+      <div className="mt-8 grid gap-3">
+        {task.steps.map((step) => (
+          <button
+            type="button"
+            className="flex items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/5 p-4 text-left"
+            key={step.id}
+            onClick={() => onToggleStep(step.id, !step.done)}
+          >
+            <span
+              className={`grid size-8 shrink-0 place-items-center rounded-full border ${
+                step.done
+                  ? "border-gold-soft bg-gold-soft text-black"
+                  : "border-indigo-soft text-indigo-soft"
+              }`}
+            >
+              {step.done ? <Check size={17} /> : step.position + 1}
+            </span>
+            <span className={step.done ? "text-dim line-through" : "text-starlight"}>
+              {step.content}
+            </span>
+          </button>
+        ))}
+      </div>
 
+      <div className="mt-8 text-center">
+        <CheckCircle2 className="mx-auto text-dim" size={36} />
+        <p className="mx-auto mt-6 max-w-xs font-bold text-dim leading-7">
+          {task.encouragement ?? "Perfection is the enemy of the first draft. Just flow."}
+        </p>
         {task.otherTasks.length > 0 ? (
           <p className="mt-4 text-dim text-sm">
             +{task.otherTasks.length} other things noted, set aside for now.
