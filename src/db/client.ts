@@ -18,12 +18,22 @@ function makeClient(): ReturnType<typeof postgres> {
   // Cloud Run attaches the socket at /cloudsql/<CLOUD_SQL_INSTANCE>
   const cloudSqlInstance = envValue("CLOUD_SQL_INSTANCE");
   if (cloudSqlInstance) {
+    const cloudSqlUser = envValue("CLOUD_SQL_USER");
+    const cloudSqlPassword = envValue("CLOUD_SQL_PASSWORD");
+    const cloudSqlDatabase = envValue("CLOUD_SQL_DATABASE");
+
+    if (isProduction() && (!cloudSqlUser || !cloudSqlPassword || !cloudSqlDatabase)) {
+      throw new Error(
+        "CLOUD_SQL_USER, CLOUD_SQL_PASSWORD, and CLOUD_SQL_DATABASE are required when CLOUD_SQL_INSTANCE is set in production.",
+      );
+    }
+
     return postgres({
       ...sharedOpts,
       host: `/cloudsql/${cloudSqlInstance}`,
-      user: envValue("CLOUD_SQL_USER") ?? "agent_app",
-      password: envValue("CLOUD_SQL_PASSWORD") ?? "",
-      database: envValue("CLOUD_SQL_DATABASE") ?? "agent_context",
+      user: cloudSqlUser ?? "agent_app",
+      password: cloudSqlPassword ?? "",
+      database: cloudSqlDatabase ?? "agent_context",
     });
   }
 

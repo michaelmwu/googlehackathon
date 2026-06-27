@@ -553,7 +553,11 @@ function parseModelJson<T>(text: string | undefined): T {
         .replace(/,\s*([}\]])/g, "$1");
 
       if (repaired !== candidate) {
-        return JSON.parse(repaired) as T;
+        try {
+          return JSON.parse(repaired) as T;
+        } catch {
+          // Try the next candidate before surfacing the original parse error.
+        }
       }
 
       if (candidate === candidates.at(-1)) {
@@ -822,8 +826,20 @@ function booleanArg(args: Record<string, unknown> | undefined, key: string): boo
   return typeof value === "boolean" ? value : null;
 }
 
-function stepsArg(args: Record<string, unknown> | undefined): string[] {
-  return normalizeSteps(args?.steps);
+function stepsArg(args: Record<string, unknown> | undefined): string[] | null {
+  const rawSteps = args?.steps;
+
+  if (!Array.isArray(rawSteps)) {
+    return null;
+  }
+
+  const steps = rawSteps
+    .filter((step): step is string => typeof step === "string")
+    .map((step) => step.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+  return steps.length > 0 ? steps : null;
 }
 
 function focusToolDeclarations(): FunctionDeclaration[] {
@@ -1131,10 +1147,16 @@ async function executeAgentTool({
         : {}),
     });
   } else if (name === "replace_steps") {
+    const steps = stepsArg(args);
+
+    if (!steps) {
+      throw new Error("replace_steps requires steps.");
+    }
+
     await updateTaskDetails({
       taskId: ownedTask.task.id,
       userId: user.id,
-      steps: stepsArg(args),
+      steps,
     });
   } else if (name === "add_step") {
     const content = stringArg(args, "content");
@@ -1788,6 +1810,8 @@ app.post("/api/chat", async (c) => {
       "You are Prioritizer for reflection. Help the user notice one meaningful signal from the day and choose what to carry tomorrow. Use set_carry_forward when the user explicitly names what to carry.",
   }[agent];
 
+  const userLabel = user.displayName?.trim() || (user.isDemo ? "demo user" : "signed-in user");
+
   const prompt = [
     `Agent: ${agent}`,
     `Instruction: ${roleInstruction}`,
@@ -1795,7 +1819,7 @@ app.post("/api/chat", async (c) => {
     "Mutation rule: when the user asks for a visible task/list change, call a tool instead of only chatting about it.",
     "Step-list rule: replacement step lists should contain 5 to 9 ordered micro-steps. Make them specific to the user's actual task, recipe, object, or context.",
     "Example: if the active task is a recipe and the user says 'change it to pasta and update the todo list', call rewrite_task and replace_steps with real pasta steps.",
-    `User: ${user.displayName ?? user.email}`,
+    `User: ${userLabel}`,
     ownedTask
       ? `Task: ${ownedTask.payload.title}\nWhy: ${ownedTask.payload.whyItMatters ?? "not set"}\nSteps:\n${ownedTask.payload.steps
           .map((step) => `${step.done ? "[x]" : "[ ]"} ${step.id}: ${step.content}`)

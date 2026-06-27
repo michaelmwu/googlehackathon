@@ -108,13 +108,9 @@ reclaim_same_worktree_port "$PORT" "$root"
 exit_file="$(mktemp "${TMPDIR:-/tmp}/starflow-dev-local.XXXXXX")"
 rm -f "$exit_file"
 
-(
-  run_and_report api ./scripts/local-env.sh exec -- bun run dev:api
-) &
+run_and_report api ./scripts/local-env.sh exec -- bun run dev:api &
 api_pid="$!"
-(
-  run_and_report web ./scripts/local-env.sh exec -- bun run dev
-) &
+run_and_report web ./scripts/local-env.sh exec -- bun run dev &
 web_pid="$!"
 
 while [ ! -f "$exit_file" ]; do
