@@ -61,6 +61,7 @@ bun run dev            # Vite frontend only
 bun run db:migrate     # local Postgres migrations
 bun run typecheck      # TypeScript check
 bun run lint           # Biome check
+bun run test:e2e       # Playwright browser checks
 bun run build          # production build
 ```
 

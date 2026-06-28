@@ -30,6 +30,7 @@ Run the narrowest relevant checks while iterating:
 ```bash
 bun run typecheck
 bun run lint
+bun run test:e2e
 ```
 
 Before opening or updating a pull request, run:

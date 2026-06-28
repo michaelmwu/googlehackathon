@@ -134,6 +134,7 @@ Run the narrowest relevant checks while iterating:
 ```bash
 bun run typecheck
 bun run lint
+bun run test:e2e
 ```
 
 Before opening or updating a PR, run:
@@ -143,6 +144,8 @@ bun run build
 ```
 
 `bun run build` runs `tsc --noEmit` and `vite build`.
+`bun run test:e2e` runs the Playwright browser suite against a Vite dev server with mocked API
+responses, so it does not require local Postgres or Gemini credentials.
 
 ## Google Cloud Bootstrap
 

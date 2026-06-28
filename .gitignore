@@ -33,3 +33,5 @@ bun.lockb
 # Test coverage
 coverage/
 .nyc_output/
+playwright-report/
+test-results/

@@ -12,6 +12,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "ci": "bun run lint && bun run build && bun run test:e2e",
     "db:up": "./scripts/dev-db.sh up -d postgres",
     "db:down": "./scripts/dev-db.sh down",
     "db:logs": "./scripts/dev-db.sh logs -f postgres",
@@ -23,6 +26,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
+    "@playwright/test": "^1.61.0",
     "@tailwindcss/vite": "^4.3.1",
     "@types/bun": "^1.1.8",
     "@types/react": "^19.2.17",
