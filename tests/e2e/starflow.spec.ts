@@ -80,14 +80,16 @@ type MockOptions = {
   reflections?: Reflection[];
 };
 
-const demoUser: User = {
-  id: "user-demo",
-  email: "demo+playwright@starflow.local",
-  displayName: "Demo",
-  isDemo: true,
-};
-
 const now = "2026-06-28T12:00:00.000Z";
+
+function makeDemoUser(sessionNumber: number): User {
+  return {
+    id: `user-demo-${sessionNumber}`,
+    email: `demo+playwright-${sessionNumber}@starflow.local`,
+    displayName: "Demo",
+    isDemo: true,
+  };
+}
 
 function makeTask(overrides: Partial<FocusTask> = {}): FocusTask {
   return {
@@ -121,14 +123,21 @@ function makeAppState(memories: Memory[], task: FocusTask | null, reflections: R
 }
 
 async function installApiMocks(page: Page, options: MockOptions = {}) {
-  let signedIn = options.signedIn ?? false;
-  const memories = [...(options.memories ?? [])];
-  const reflections = [...(options.reflections ?? [])];
+  let demoSessionCount = options.signedIn ? 1 : 0;
+  let activeUser = options.signedIn ? makeDemoUser(demoSessionCount) : null;
+  let signedIn = Boolean(activeUser);
+  let memories = [...(options.memories ?? [])];
+  let reflections = [...(options.reflections ?? [])];
   const requests: ApiRequest[] = [];
   let appState = makeAppState(memories, options.task ?? null, reflections);
 
   const updateState = () => {
     appState = makeAppState(memories, appState.task, reflections);
+  };
+  const resetUserOwnedState = () => {
+    memories = [];
+    reflections = [];
+    appState = makeAppState(memories, null, reflections);
   };
 
   await page.route("**/api/**", async (route) => {
@@ -155,26 +164,30 @@ async function installApiMocks(page: Page, options: MockOptions = {}) {
     if (url.pathname === "/api/config" && method === "GET") {
       await fulfill({
         googleOAuthClientId: null,
-        geminiConfigured: true,
+        geminiConfigured: false,
         model: "gemini-3.5-flash",
       });
       return;
     }
 
     if (url.pathname === "/api/me" && method === "GET") {
-      await fulfill({ user: signedIn ? demoUser : null });
+      await fulfill({ user: signedIn ? activeUser : null });
       return;
     }
 
     if (url.pathname === "/api/auth/demo" && method === "POST") {
+      demoSessionCount += 1;
+      activeUser = makeDemoUser(demoSessionCount);
       signedIn = true;
-      await fulfill({ user: demoUser });
+      resetUserOwnedState();
+      await fulfill({ user: activeUser });
       return;
     }
 
     if (url.pathname === "/api/logout" && method === "POST") {
+      activeUser = null;
       signedIn = false;
-      appState = makeAppState([], null, []);
+      resetUserOwnedState();
       await fulfill({ ok: true });
       return;
     }
@@ -352,6 +365,24 @@ test("demo users can save a Scatter thought without leaving the page", async ({ 
         request.body.text === thought,
     ),
   ).toBe(true);
+});
+
+test("a new demo sign-in starts with empty user-owned state", async ({ page }) => {
+  await installApiMocks(page);
+
+  await page.goto("/app");
+  await page.getByRole("button", { name: "Continue as demo" }).click();
+
+  await page.getByPlaceholder("Type a spark of thought...").fill("Remember this only once.");
+  await page.getByRole("button", { name: "Save to memory" }).click();
+  await expect(page.getByText("1 thought remembered.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Demo" }).first().click();
+  await expect(page.getByRole("heading", { name: "Start where you are." })).toBeVisible();
+
+  await page.getByRole("button", { name: "Continue as demo" }).click();
+  await expect(page.getByText("1 thought remembered.")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "View categorized thoughts" })).toHaveCount(0);
 });
 
 test("saved thoughts open the thought map and can start a Flow task", async ({ page }) => {
