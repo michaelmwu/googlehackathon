@@ -4,7 +4,8 @@
 
 - Bun.
 - Docker with Docker Compose v2 for local Postgres.
-- A Gemini key or Google Cloud credentials for AI-backed flows.
+- An OpenAI API key for AI-backed flows. Gemini credentials are still supported
+  when `LLM_PROVIDER=gemini`.
 
 This repo uses Bun lockfiles and a supply-chain cooldown. `bunfig.toml` sets:
 
@@ -32,7 +33,8 @@ cp .env.example .env
 For the fastest local demo, set:
 
 ```bash
-GEMINI_API_KEY=your-gemini-api-key
+OPENAI_API_KEY=your-openai-api-key
+SESSION_SECRET=replace-with-random-secret
 ```
 
 Run the full local stack:
@@ -100,12 +102,21 @@ Use `db:migrate:url` for production-like databases from a trusted machine or CI 
 Common local variables:
 
 ```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
 GEMINI_API_KEY=your-gemini-api-key
 GEMINI_MODEL=gemini-3.5-flash
 GOOGLE_OAUTH_CLIENT_ID=your-web-client-id
 SESSION_SECRET=replace-with-random-secret
 ALLOWED_EMAILS=you@example.com,teammate@example.com
 ```
+
+`OPENAI_BASE_URL` is optional and supports OpenAI-compatible providers. Leave it
+unset for the standard OpenAI API.
+
+Set `LLM_PROVIDER=gemini` to use one of the Gemini modes below.
 
 Gemini Enterprise Agent Platform key mode:
 
@@ -148,6 +159,25 @@ bun run build
 responses, so it does not require local Postgres or Gemini credentials.
 On a fresh local machine, install the Chromium browser once with
 `bunx playwright install chromium`; CI installs the browser during the Playwright job.
+
+## Docker Compose Deploy
+
+For a local production-style deploy:
+
+```bash
+cp .env.example .env
+# Set OPENAI_API_KEY and SESSION_SECRET in .env.
+docker compose up --build
+```
+
+Compose starts:
+
+- `postgres`: Postgres 16 with pgvector.
+- `migrate`: applies SQL migrations from `db/migrations/`.
+- `app`: production Bun server built from the Dockerfile.
+
+The app listens on `http://127.0.0.1:${APP_PORT:-3000}` by default. Override
+`APP_PORT` or `APP_HOST_BIND` in `.env` for a different host binding.
 
 ## Google Cloud Bootstrap
 

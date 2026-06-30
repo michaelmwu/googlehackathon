@@ -1,6 +1,6 @@
 # Architecture
 
-Starflow is a single Bun service that serves a Vite/React client and exposes Hono API routes. Gemini calls stay on the server so browser clients never receive Google API keys.
+Starflow is a single Bun service that serves a Vite/React client and exposes Hono API routes. LLM calls stay on the server so browser clients never receive provider keys.
 
 ## Runtime Shape
 
@@ -12,17 +12,18 @@ Mobile browser
   -> Postgres 16 + pgvector
 
 Hono API routes
-  -> Google GenAI SDK
-  -> Gemini Enterprise Agent Platform or Gemini Developer API
+  -> OpenAI SDK
+  -> OpenAI API or OpenAI-compatible endpoint
+  -> Optional Gemini provider
 ```
 
-In production, the frontend is built into `dist/client/` and served by the Bun process. The Cloud Run entrypoint listens on `0.0.0.0` and `PORT`.
+In production, the frontend is built into `dist/client/` and served by the Bun process. The Docker entrypoint listens on `0.0.0.0` and `PORT`.
 
 ## Core Product Loop
 
 1. The user signs in with demo auth or identity-only Google sign-in.
 2. The user captures a messy thought, task, or photo.
-3. The backend asks Gemini for a structured triage result.
+3. The backend asks the configured LLM for a structured triage result.
 4. The result is persisted as one open focus task with tiny steps.
 5. The focus UI lets the user complete steps or ask the scoped page agent to adjust the task.
 6. Reflection stores short check-ins and carry-forward context.
@@ -31,7 +32,14 @@ The app is intentionally optimized for activation: it prefers one task, small ne
 
 ## AI Provider Modes
 
-`src/index.ts` selects the Gemini mode from environment variables:
+`src/config.ts` validates environment settings with Zod. `src/llm.ts` selects the LLM provider from environment variables.
+
+Default OpenAI mode:
+
+- OpenAI API with `OPENAI_API_KEY`.
+- OpenAI-compatible endpoints with `OPENAI_BASE_URL`.
+
+Set `LLM_PROVIDER=gemini` to use one of the Gemini modes:
 
 - Gemini Enterprise Agent Platform with `GOOGLE_AGENT_PLATFORM_KEY`.
 - Gemini Enterprise Agent Platform with `GOOGLE_GENAI_USE_ENTERPRISE=true` and `GOOGLE_API_KEY`.
@@ -61,7 +69,7 @@ Page agents can only mutate a narrow, schema-backed surface:
 - Focus can call bounded task tools such as `rewrite_task`, `replace_steps`, `add_step`, `shrink_step`, and `complete_step`.
 - Reflect can call `set_carry_forward` for the current reflection form, but cannot mutate tasks.
 
-The server applies focus mutations to Postgres through Gemini function calling and returns the reloaded task. Freeform chat replies alone are not trusted to change visible task state.
+The server applies focus mutations to Postgres through provider function calling and returns the reloaded task. Freeform chat replies alone are not trusted to change visible task state.
 
 ## Data Model
 
@@ -77,7 +85,7 @@ Main tables:
 - `tasks` and `task_steps`: the active focus task and ordered tiny steps.
 - `reflections`: reflection answers, summary, and carry-forward text.
 
-Local development uses `pgvector/pgvector:0.8.3-pg16`, matching the Cloud SQL Postgres 16 production direction.
+Local development and Docker Compose deploys use `pgvector/pgvector:0.8.3-pg16`.
 
 ## API Surface
 

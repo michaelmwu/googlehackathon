@@ -1,4 +1,54 @@
 services:
+  app:
+    image: starflow-app
+    build: .
+    environment:
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      GEMINI_PROJECT_NUMBER: ${GEMINI_PROJECT_NUMBER:-}
+      GOOGLE_AGENT_PLATFORM_KEY: ${GOOGLE_AGENT_PLATFORM_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_GENAI_USE_ENTERPRISE: ${GOOGLE_GENAI_USE_ENTERPRISE:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      NODE_ENV: production
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-}
+      PORT: 3000
+      POSTGRES_DB: ${POSTGRES_DB:-agent_context}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_app}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_app}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+    ports:
+      - "${APP_HOST_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  migrate:
+    image: starflow-app
+    build: .
+    environment:
+      NODE_ENV: production
+      POSTGRES_DB: ${POSTGRES_DB:-agent_context}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_app}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_app}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["bun", "run", "db:migrate:deploy"]
+    restart: "no"
+
   postgres:
     image: pgvector/pgvector:0.8.3-pg16
     environment:

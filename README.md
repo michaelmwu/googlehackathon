@@ -9,7 +9,7 @@ Starflow is a mobile-first ADHD support app that turns scattered thoughts into o
 - Keep the current focus task in a shared Postgres-backed task store.
 - Let the page chat make explicit allowed UI mutations, such as rewriting capture text or shrinking a focus step.
 - Support demo sign-in and identity-only Google sign-in.
-- Run Gemini server-side through either Gemini Enterprise Agent Platform or the Gemini Developer API.
+- Run OpenAI server-side by default, with Gemini still available as an alternate provider.
 
 ## Stack
 
@@ -18,9 +18,10 @@ Starflow is a mobile-first ADHD support app that turns scattered thoughts into o
 - Tailwind CSS v4 styling.
 - TanStack Query for frontend server state.
 - Drizzle + Postgres 16 with `pgvector`.
-- Google GenAI SDK (`@google/genai`) for Gemini.
+- OpenAI SDK as the primary LLM provider.
+- Google GenAI SDK (`@google/genai`) for optional Gemini fallback.
 - Static frontend served by the same Bun process in production.
-- Cloud Run container contract: listens on `0.0.0.0` and `PORT`.
+- Container contract: listens on `0.0.0.0` and `PORT`.
 
 ## Quickstart
 
@@ -36,7 +37,7 @@ Create local environment variables:
 cp .env.example .env
 ```
 
-For the fastest local demo, set `GEMINI_API_KEY` in `.env` from Google AI Studio.
+For the fastest local demo, set `OPENAI_API_KEY` in `.env`.
 
 Start local Postgres, apply migrations, and run the Bun API plus Vite frontend:
 
@@ -51,6 +52,18 @@ To inspect the derived local values:
 ```bash
 ./scripts/local-env.sh env
 ```
+
+## Docker Compose Deploy
+
+Copy `.env.example` to `.env`, set at least `OPENAI_API_KEY` and `SESSION_SECRET`,
+then run:
+
+```bash
+docker compose up --build
+```
+
+Compose starts Postgres, applies migrations through the `migrate` service, and
+serves the production app on `http://127.0.0.1:${APP_PORT:-3000}`.
 
 ## Useful Commands
 
@@ -68,6 +81,6 @@ bun run build          # production build
 ## Project Docs
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) explains the runtime architecture, API surface, data model, and AI agent boundaries.
-- [DEVELOPMENT.md](DEVELOPMENT.md) covers local setup, environment variables, database commands, checks, and Cloud Run deploy notes.
+- [DEVELOPMENT.md](DEVELOPMENT.md) covers local setup, environment variables, database commands, checks, and Docker Compose deploy notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md) describes expectations for changes and pull requests.
 - `docs/product-decisions.md`, `docs/engineering-decisions.md`, and `docs/starflow-mvp-plan.md` preserve dated product and engineering rationale.

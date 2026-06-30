@@ -1,8 +1,16 @@
 # Engineering Decisions
 
+## 2026-06-30: OpenAI Primary Provider And Compose Deploy
+
+OpenAI is now the default LLM provider through `OPENAI_API_KEY`, `OPENAI_MODEL`, and optional `OPENAI_BASE_URL` for OpenAI-compatible endpoints. The default model is `gpt-4.1-mini`. Gemini remains available by setting `LLM_PROVIDER=gemini`.
+
+Settings validation now lives in `src/config.ts` using Zod. Provider-specific SDK calls live in `src/llm.ts` so routes use one text/json/tool-call surface instead of directly importing provider SDKs.
+
+Docker Compose now supports a production-style local deploy with `app`, `postgres`, and `migrate` services.
+
 ## 2026-06-27: Gemini Access
 
-The app keeps Gemini calls server-side through `/api/generate` so browser clients never receive API keys.
+The app originally kept Gemini calls server-side through `/api/generate` so browser clients never received API keys. Gemini remains supported as an alternate provider.
 
 Supported runtime modes:
 

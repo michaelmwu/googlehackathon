@@ -1,36 +1,28 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import {
-  type Content,
-  type FunctionCall,
-  FunctionCallingConfigMode,
-  type FunctionDeclaration,
-  GoogleGenAI,
-  Type,
-} from "@google/genai";
 import { and, count, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { OAuth2Client } from "google-auth-library";
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { envValue, isProduction, parsePort } from "./config";
 import { db } from "./db/client";
 import { agentMemories, appUsers, brainDumps, reflections, taskSteps, tasks } from "./db/schema";
+import {
+  generateLlmText,
+  generateLlmToolStep,
+  hasUsableLlmCredentials,
+  type LlmConversationItem,
+  type LlmToolDeclaration,
+  llmConfig,
+  type ModelFunctionCall,
+  modelName,
+} from "./llm";
 
-const DEFAULT_MODEL = "gemini-3.5-flash";
 const MAX_PROMPT_LENGTH = 8_000;
 const SESSION_COOKIE = "starflow_session";
 const DEMO_EMAIL_DOMAIN = "starflow.local";
 
-type ProviderMode = "gemini-enterprise-agent-platform" | "gemini-developer-api";
 type AgentRole = "landing" | "signin" | "capture" | "focus" | "reflect";
 type UserEventType = "input_received" | "task_edited" | "task_completed";
-
-type GeminiConfig = {
-  provider: ProviderMode;
-  credentialSource: string;
-  apiKey: string | undefined;
-  project: string | undefined;
-  projectNumber: string | undefined;
-  location: string;
-};
 
 type PublicUser = {
   id: string;
@@ -87,155 +79,9 @@ const memoryCategoryCache = new Map<
   }
 >();
 
-function envValue(name: string): string | undefined {
-  const value = process.env[name]?.trim();
-  return value && value.length > 0 ? value : undefined;
-}
-
-function envFlag(name: string): boolean {
-  return ["1", "true", "yes", "on"].includes((envValue(name) ?? "").toLowerCase());
-}
-
-function modelName(): string {
-  return envValue("GEMINI_MODEL") ?? DEFAULT_MODEL;
-}
-
-function developerApiKey(): string | undefined {
-  return envValue("GEMINI_API_KEY") ?? envValue("GOOGLE_API_KEY");
-}
-
-function enterpriseApiKey(): string | undefined {
-  if (envFlag("GOOGLE_GENAI_USE_ENTERPRISE")) {
-    return envValue("GOOGLE_AGENT_PLATFORM_KEY") ?? envValue("GOOGLE_API_KEY");
-  }
-
-  return envValue("GOOGLE_AGENT_PLATFORM_KEY");
-}
-
-function shouldUseEnterprise(): boolean {
-  if (envFlag("GOOGLE_GENAI_USE_ENTERPRISE")) {
-    return true;
-  }
-
-  if (enterpriseApiKey()) {
-    return true;
-  }
-
-  return Boolean(envValue("GOOGLE_CLOUD_PROJECT") && !developerApiKey());
-}
-
-function geminiConfig(): GeminiConfig {
-  const project = envValue("GOOGLE_CLOUD_PROJECT");
-  const projectNumber = envValue("GEMINI_PROJECT_NUMBER");
-  const location = envValue("GOOGLE_CLOUD_LOCATION") ?? "global";
-
-  if (shouldUseEnterprise()) {
-    const apiKey = enterpriseApiKey();
-
-    if (apiKey) {
-      return {
-        provider: "gemini-enterprise-agent-platform",
-        credentialSource: envValue("GOOGLE_AGENT_PLATFORM_KEY")
-          ? "GOOGLE_AGENT_PLATFORM_KEY"
-          : "GOOGLE_API_KEY",
-        apiKey,
-        project,
-        projectNumber,
-        location,
-      };
-    }
-
-    return {
-      provider: "gemini-enterprise-agent-platform",
-      credentialSource: "application-default-credentials",
-      apiKey: undefined,
-      project,
-      projectNumber,
-      location,
-    };
-  }
-
-  const apiKey = developerApiKey();
-
-  return {
-    provider: "gemini-developer-api",
-    credentialSource: apiKey
-      ? envValue("GEMINI_API_KEY")
-        ? "GEMINI_API_KEY"
-        : "GOOGLE_API_KEY"
-      : "not-configured",
-    apiKey,
-    project,
-    projectNumber,
-    location,
-  };
-}
-
-function parsePort(rawPort: string | undefined): number {
-  if (!rawPort || rawPort.trim().length === 0) {
-    return 3000;
-  }
-
-  const portCandidate = rawPort.trim();
-
-  if (!/^\d+$/.test(portCandidate)) {
-    return 3000;
-  }
-
-  const parsedPort = Number(portCandidate);
-  return Number.isSafeInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65_535
-    ? parsedPort
-    : 3000;
-}
-
 function logServerError(message: string, error: unknown): void {
   // biome-ignore lint/suspicious/noConsole: Server-side diagnostics belong in Cloud Run logs.
   console.error(message, error);
-}
-
-function configHasUsableCredentials(config: GeminiConfig): boolean {
-  if (config.provider === "gemini-enterprise-agent-platform") {
-    return Boolean(config.apiKey ?? config.project);
-  }
-
-  return Boolean(config.apiKey);
-}
-
-function hasUsableCredentials(): boolean {
-  return configHasUsableCredentials(geminiConfig());
-}
-
-function createClient(): GoogleGenAI {
-  const config = geminiConfig();
-
-  if (config.provider === "gemini-enterprise-agent-platform") {
-    if (config.apiKey) {
-      return new GoogleGenAI({
-        enterprise: true,
-        apiKey: config.apiKey,
-        apiVersion: "v1",
-      });
-    }
-
-    if (!config.project) {
-      throw new Error(
-        "Set GOOGLE_AGENT_PLATFORM_KEY, or set GOOGLE_CLOUD_PROJECT for Application Default Credentials.",
-      );
-    }
-
-    return new GoogleGenAI({
-      enterprise: true,
-      project: config.project,
-      location: config.location,
-      apiVersion: "v1",
-    });
-  }
-
-  if (!config.apiKey) {
-    throw new Error("Set GEMINI_API_KEY or GOOGLE_API_KEY for Gemini Developer API use.");
-  }
-
-  return new GoogleGenAI({ apiKey: config.apiKey });
 }
 
 function sessionSecret(): string {
@@ -276,10 +122,6 @@ function verifySessionValue(raw: string | undefined): string | null {
   }
 
   return timingSafeEqual(expectedBuffer, actualBuffer) ? userId : null;
-}
-
-function isProduction(): boolean {
-  return process.env.NODE_ENV === "production";
 }
 
 function isDemoEmail(email: string): boolean {
@@ -466,38 +308,38 @@ async function serveFrontend(pathname: string): Promise<Response> {
 
 function triageSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
       main_quest: {
-        type: Type.OBJECT,
+        type: "object",
         properties: {
-          title: { type: Type.STRING },
-          why_it_matters: { type: Type.STRING },
+          title: { type: "string" },
+          why_it_matters: { type: "string" },
         },
         required: ["title"],
       },
       tiny_steps: {
-        type: Type.ARRAY,
+        type: "array",
         description:
           "4 to 6 short, high-leverage steps. The first step should take about two minutes.",
-        items: { type: Type.STRING },
+        items: { type: "string" },
       },
       detected_deadlines: {
-        type: Type.ARRAY,
+        type: "array",
         items: {
-          type: Type.OBJECT,
+          type: "object",
           properties: {
-            text: { type: Type.STRING },
-            when: { type: Type.STRING, nullable: true },
+            text: { type: "string" },
+            when: { type: "string", nullable: true },
           },
         },
       },
       other_tasks: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
+        type: "array",
+        items: { type: "string" },
       },
-      emotional_tone: { type: Type.STRING },
-      encouragement: { type: Type.STRING },
+      emotional_tone: { type: "string" },
+      encouragement: { type: "string" },
     },
     required: ["main_quest", "tiny_steps", "emotional_tone", "encouragement"],
   };
@@ -505,12 +347,12 @@ function triageSchema() {
 
 function chatSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
-      reply: { type: Type.STRING },
-      capture_text: { type: Type.STRING, nullable: true },
-      carry_forward: { type: Type.STRING, nullable: true },
-      route: { type: Type.STRING, nullable: true },
+      reply: { type: "string" },
+      capture_text: { type: "string", nullable: true },
+      carry_forward: { type: "string", nullable: true },
+      route: { type: "string", nullable: true },
     },
     required: ["reply"],
   };
@@ -518,12 +360,12 @@ function chatSchema() {
 
 function reflectionSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
-      summary: { type: Type.STRING },
-      pattern: { type: Type.STRING },
-      small_win: { type: Type.STRING },
-      tomorrow_experiment: { type: Type.STRING },
+      summary: { type: "string" },
+      pattern: { type: "string" },
+      small_win: { type: "string" },
+      tomorrow_experiment: { type: "string" },
     },
     required: ["summary", "pattern", "small_win", "tomorrow_experiment"],
   };
@@ -531,26 +373,26 @@ function reflectionSchema() {
 
 function dailyReportSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
-      headline: { type: Type.STRING },
-      encouragement: { type: Type.STRING },
+      headline: { type: "string" },
+      encouragement: { type: "string" },
       observations: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
+        type: "array",
+        items: { type: "string" },
       },
       threads: {
-        type: Type.ARRAY,
+        type: "array",
         items: {
-          type: Type.OBJECT,
+          type: "object",
           properties: {
-            label: { type: Type.STRING },
-            detail: { type: Type.STRING },
+            label: { type: "string" },
+            detail: { type: "string" },
           },
           required: ["label", "detail"],
         },
       },
-      carry_forward: { type: Type.STRING },
+      carry_forward: { type: "string" },
     },
     required: ["headline", "encouragement", "observations", "threads", "carry_forward"],
   };
@@ -558,10 +400,10 @@ function dailyReportSchema() {
 
 function photoCaptureSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
-      memory_text: { type: Type.STRING },
-      note: { type: Type.STRING },
+      memory_text: { type: "string" },
+      note: { type: "string" },
     },
     required: ["memory_text", "note"],
   };
@@ -569,18 +411,18 @@ function photoCaptureSchema() {
 
 function memoryCategoriesSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
       categories: {
-        type: Type.ARRAY,
+        type: "array",
         items: {
-          type: Type.OBJECT,
+          type: "object",
           properties: {
-            name: { type: Type.STRING },
-            summary: { type: Type.STRING },
+            name: { type: "string" },
+            summary: { type: "string" },
             memory_ids: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
+              type: "array",
+              items: { type: "string" },
             },
           },
           required: ["name", "summary", "memory_ids"],
@@ -593,20 +435,20 @@ function memoryCategoriesSchema() {
 
 function eventRouterSchema() {
   return {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
-      sensed_spark: { type: Type.STRING },
-      spark_type: { type: Type.STRING },
-      triage_question: { type: Type.STRING },
-      coach_persona: { type: Type.STRING },
-      one_first_step: { type: Type.STRING },
+      sensed_spark: { type: "string" },
+      spark_type: { type: "string" },
+      triage_question: { type: "string" },
+      coach_persona: { type: "string" },
+      one_first_step: { type: "string" },
       tiny_steps: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
+        type: "array",
+        items: { type: "string" },
       },
-      priority_reason: { type: Type.STRING },
-      suggested_tool_action: { type: Type.STRING },
-      dashboard_note: { type: Type.STRING },
+      priority_reason: { type: "string" },
+      suggested_tool_action: { type: "string" },
+      dashboard_note: { type: "string" },
     },
     required: [
       "sensed_spark",
@@ -663,34 +505,6 @@ function parseModelJson<T>(text: string | undefined): T {
   throw new Error("Model returned no JSON object.");
 }
 
-function modelResponseText(response: {
-  text?: string | undefined;
-  candidates?:
-    | Array<{
-        content?:
-          | {
-              parts?: Array<{ text?: string | undefined }> | undefined;
-            }
-          | undefined;
-      }>
-    | undefined;
-}): string | undefined {
-  const directText = response.text?.trim();
-
-  if (directText) {
-    return directText;
-  }
-
-  const partsText =
-    response.candidates
-      ?.flatMap((candidate) => candidate.content?.parts ?? [])
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim() ?? "";
-
-  return partsText || undefined;
-}
-
 function normalizeSteps(rawSteps: unknown): string[] {
   if (!Array.isArray(rawSteps)) {
     return [
@@ -711,42 +525,32 @@ function normalizeSteps(rawSteps: unknown): string[] {
 }
 
 async function generateFreeform(prompt: string, systemInstruction: string): Promise<string> {
-  const client = createClient();
-  const response = await client.models.generateContent({
-    model: modelName(),
-    contents: prompt,
-    config: {
-      systemInstruction,
-      temperature: 0.4,
-      maxOutputTokens: 2_500,
-    },
+  return generateLlmText({
+    prompt,
+    systemInstruction,
+    temperature: 0.4,
+    maxOutputTokens: 2_500,
   });
-
-  return modelResponseText(response) ?? "No text was returned by the model.";
 }
 
 async function generateTriage(text: string): Promise<TriageResult> {
-  const client = createClient();
-  const response = await client.models.generateContent({
-    model: modelName(),
-    contents: text,
-    config: {
-      systemInstruction: [
-        "You help an ADHD person who just brain-dumped.",
-        "From their mess, pick the SINGLE most relieving thing to focus on right now, not necessarily the most important.",
-        "Break the focus into 4 to 6 short, concrete steps in order.",
-        "The first step must be doable in about two minutes. Each step is one small physical action.",
-        "Do not over-explain. Prefer short step labels over detailed instructions.",
-        "Be warm and brief. Never lecture. Never tell them to just do something.",
-      ].join(" "),
-      responseMimeType: "application/json",
-      responseSchema: triageSchema(),
-      temperature: 0.5,
-      maxOutputTokens: 2_500,
-    },
+  const response = await generateLlmText({
+    prompt: text,
+    systemInstruction: [
+      "You help an ADHD person who just brain-dumped.",
+      "From their mess, pick the SINGLE most relieving thing to focus on right now, not necessarily the most important.",
+      "Break the focus into 4 to 6 short, concrete steps in order.",
+      "The first step must be doable in about two minutes. Each step is one small physical action.",
+      "Do not over-explain. Prefer short step labels over detailed instructions.",
+      "Be warm and brief. Never lecture. Never tell them to just do something.",
+    ].join(" "),
+    responseSchema: triageSchema(),
+    schemaName: "triage",
+    temperature: 0.5,
+    maxOutputTokens: 2_500,
   });
 
-  return parseModelJson<TriageResult>(modelResponseText(response));
+  return parseModelJson<TriageResult>(response);
 }
 
 function taskPayload(
@@ -942,7 +746,7 @@ function fallbackMemoryCategories(memories: Awaited<ReturnType<typeof loadScatte
 }
 
 async function categorizeMemories(memories: Awaited<ReturnType<typeof loadScatterMemories>>) {
-  if (memories.length === 0 || !hasUsableCredentials()) {
+  if (memories.length === 0 || !hasUsableLlmCredentials()) {
     return { categories: fallbackMemoryCategories(memories), usedModel: false };
   }
 
@@ -959,20 +763,16 @@ async function categorizeMemories(memories: Awaited<ReturnType<typeof loadScatte
   ].join("\n\n");
 
   try {
-    const client = createClient();
-    const response = await client.models.generateContent({
-      model: modelName(),
-      contents: prompt,
-      config: {
-        systemInstruction:
-          "You organize saved user thoughts into gentle, useful buckets. Return only JSON.",
-        responseMimeType: "application/json",
-        responseSchema: memoryCategoriesSchema(),
-        temperature: 0.25,
-        maxOutputTokens: 2_500,
-      },
+    const response = await generateLlmText({
+      prompt,
+      systemInstruction:
+        "You organize saved user thoughts into gentle, useful buckets. Return only JSON.",
+      responseSchema: memoryCategoriesSchema(),
+      schemaName: "memory_categories",
+      temperature: 0.25,
+      maxOutputTokens: 2_500,
     });
-    const parsed = parseModelJson<MemoryCategoryResult>(modelResponseText(response));
+    const parsed = parseModelJson<MemoryCategoryResult>(response);
     const assigned = new Set<string>();
     const categories =
       parsed.categories
@@ -1067,7 +867,7 @@ async function generateDailyReport(userId: string, window?: { since: Date; until
     return { report: exampleDailyReport(), usedModel: false, example: true };
   }
 
-  if (!hasUsableCredentials()) {
+  if (!hasUsableLlmCredentials()) {
     const report = exampleDailyReport();
     return {
       report: {
@@ -1101,18 +901,14 @@ async function generateDailyReport(userId: string, window?: { since: Date; until
   ].join("\n\n");
 
   try {
-    const client = createClient();
-    const response = await client.models.generateContent({
-      model: modelName(),
-      contents: prompt,
-      config: {
-        systemInstruction:
-          "You synthesize a supportive daily report from user-owned app data. Return only JSON.",
-        responseMimeType: "application/json",
-        responseSchema: dailyReportSchema(),
-        temperature: 0.35,
-        maxOutputTokens: 1_400,
-      },
+    const response = await generateLlmText({
+      prompt,
+      systemInstruction:
+        "You synthesize a supportive daily report from user-owned app data. Return only JSON.",
+      responseSchema: dailyReportSchema(),
+      schemaName: "daily_report",
+      temperature: 0.35,
+      maxOutputTokens: 1_400,
     });
     const parsed = parseModelJson<{
       headline?: string;
@@ -1120,7 +916,7 @@ async function generateDailyReport(userId: string, window?: { since: Date; until
       observations?: string[];
       threads?: Array<{ label?: string; detail?: string }>;
       carry_forward?: string;
-    }>(modelResponseText(response));
+    }>(response);
     const fallback = exampleDailyReport();
 
     return {
@@ -1237,7 +1033,7 @@ function stepsArg(args: Record<string, unknown> | undefined): string[] | null {
   return steps.length > 0 ? steps : null;
 }
 
-function focusToolDeclarations(): FunctionDeclaration[] {
+function focusToolDeclarations(): LlmToolDeclaration[] {
   return [
     {
       name: "rewrite_task",
@@ -1336,7 +1132,7 @@ function focusToolDeclarations(): FunctionDeclaration[] {
   ];
 }
 
-function captureToolDeclarations(): FunctionDeclaration[] {
+function captureToolDeclarations(): LlmToolDeclaration[] {
   return [
     {
       name: "set_capture_text",
@@ -1362,7 +1158,7 @@ function captureToolDeclarations(): FunctionDeclaration[] {
   ];
 }
 
-function reflectToolDeclarations(): FunctionDeclaration[] {
+function reflectToolDeclarations(): LlmToolDeclaration[] {
   return [
     {
       name: "set_carry_forward",
@@ -1378,7 +1174,7 @@ function reflectToolDeclarations(): FunctionDeclaration[] {
   ];
 }
 
-function toolDeclarationsForAgent(agent: AgentRole): FunctionDeclaration[] {
+function toolDeclarationsForAgent(agent: AgentRole): LlmToolDeclaration[] {
   if (agent === "focus") {
     return focusToolDeclarations();
   }
@@ -1480,7 +1276,7 @@ async function executeAgentTool({
   uiContext,
   user,
 }: {
-  call: FunctionCall;
+  call: ModelFunctionCall;
   ownedTask: Awaited<ReturnType<typeof loadOwnedTask>>;
   uiContext: unknown;
   user: CurrentUser;
@@ -1641,14 +1437,13 @@ app.onError((error, c) => {
 });
 
 app.get("/healthz", (c) => {
-  const config = geminiConfig();
-  const geminiConfigured = configHasUsableCredentials(config);
+  const config = llmConfig();
 
   return c.json({
     ok: true,
     provider: config.provider,
-    credentialSource: geminiConfigured ? config.credentialSource : "not-configured",
-    geminiConfigured,
+    credentialSource: config.configured ? config.credentialSource : "not-configured",
+    llmConfigured: config.configured,
     cloudProjectConfigured: Boolean(config.project),
     projectNumberConfigured: Boolean(config.projectNumber),
     location: config.location,
@@ -1658,7 +1453,7 @@ app.get("/healthz", (c) => {
 app.get("/api/config", (c) =>
   c.json({
     googleOAuthClientId: envValue("GOOGLE_OAUTH_CLIENT_ID") ?? null,
-    geminiConfigured: hasUsableCredentials(),
+    llmConfigured: hasUsableLlmCredentials(),
     model: modelName(),
   }),
 );
@@ -1751,7 +1546,7 @@ app.post("/api/generate", async (c) => {
   const user = await requireUser(c);
 
   if (!user) {
-    return c.json({ error: "Sign in before generating with Gemini." }, 401);
+    return c.json({ error: "Sign in before generating with the configured LLM." }, 401);
   }
 
   const body = await c.req.json<{ prompt?: unknown }>();
@@ -1766,11 +1561,11 @@ app.post("/api/generate", async (c) => {
     return c.json({ error: `Prompt must be ${MAX_PROMPT_LENGTH} characters or fewer.` }, 400);
   }
 
-  if (!hasUsableCredentials()) {
+  if (!hasUsableLlmCredentials()) {
     return c.json(
       {
         error:
-          "Gemini is not configured. Set GEMINI_API_KEY for Developer API mode, or GOOGLE_AGENT_PLATFORM_KEY / GOOGLE_CLOUD_PROJECT for Agent Platform mode.",
+          "LLM is not configured. Set OPENAI_API_KEY, or set LLM_PROVIDER=gemini with Gemini credentials.",
       },
       503,
     );
@@ -1784,10 +1579,10 @@ app.post("/api/generate", async (c) => {
         "Help users turn scattered thoughts into one concrete next move without judgment.",
       ].join(" "),
     );
-    return c.json({ text, model: modelName(), provider: geminiConfig().provider });
+    return c.json({ text, model: modelName(), provider: llmConfig().provider });
   } catch (error) {
-    logServerError("Gemini request failed.", error);
-    return c.json({ error: "Gemini request failed. Check the server logs for details." }, 502);
+    logServerError("LLM request failed.", error);
+    return c.json({ error: "LLM request failed. Check the server logs for details." }, 502);
   }
 });
 
@@ -1810,9 +1605,9 @@ app.post("/api/triage", async (c) => {
     return c.json({ error: `Brain dump must be ${MAX_PROMPT_LENGTH} characters or fewer.` }, 400);
   }
 
-  if (!hasUsableCredentials()) {
+  if (!hasUsableLlmCredentials()) {
     return c.json(
-      { error: "Gemini is not configured yet. Demo sign-in works, but triage needs a key." },
+      { error: "LLM is not configured yet. Demo sign-in works, but triage needs a key." },
       503,
     );
   }
@@ -1895,45 +1690,31 @@ app.post("/api/capture/photo", async (c) => {
     return c.json({ error: "Photo must be a PNG, JPEG, or WebP data URL." }, 400);
   }
 
-  if (!hasUsableCredentials()) {
-    return c.json(
-      { error: "Gemini is not configured yet. Photo capture needs a Gemini key." },
-      503,
-    );
+  if (!hasUsableLlmCredentials()) {
+    return c.json({ error: "LLM is not configured yet. Photo capture needs a model key." }, 503);
   }
 
   try {
-    const client = createClient();
-    const contents: Content[] = [
-      {
-        role: "user",
-        parts: [
-          {
-            text: [
-              "Read this photo as a Starflow Scatter capture.",
-              "Write one concise first-person memory text that captures what the user may want to remember or act on.",
-              "Do not diagnose. If the image is ambiguous, describe the visible scene neutrally.",
-            ].join(" "),
-          },
-          { inlineData: { mimeType: image.mimeType, data: image.data } },
-        ],
-      },
-    ];
-    const response = await client.models.generateContent({
-      model: modelName(),
-      contents,
-      config: {
-        systemInstruction:
-          "You are Record and Translate for an ADHD support app. Convert image context into a clear saved thought. Return only JSON.",
-        responseMimeType: "application/json",
-        responseSchema: photoCaptureSchema(),
-        temperature: 0.25,
-        maxOutputTokens: 600,
-      },
+    const response = await generateLlmText({
+      parts: [
+        {
+          type: "text",
+          text: [
+            "Read this photo as a Starflow Scatter capture.",
+            "Write one concise first-person memory text that captures what the user may want to remember or act on.",
+            "Do not diagnose. If the image is ambiguous, describe the visible scene neutrally.",
+          ].join(" "),
+        },
+        { type: "image", mimeType: image.mimeType, data: image.data },
+      ],
+      systemInstruction:
+        "You are Record and Translate for an ADHD support app. Convert image context into a clear saved thought. Return only JSON.",
+      responseSchema: photoCaptureSchema(),
+      schemaName: "photo_capture",
+      temperature: 0.25,
+      maxOutputTokens: 600,
     });
-    const parsed = parseModelJson<{ memory_text?: string; note?: string }>(
-      modelResponseText(response),
-    );
+    const parsed = parseModelJson<{ memory_text?: string; note?: string }>(response);
     const content =
       parsed.memory_text?.trim() ||
       "I captured a photo and want Starflow to remember what it shows.";
@@ -2082,33 +1863,29 @@ app.post("/api/reflect", async (c) => {
     return reflectionPrompt;
   }
 
-  if (!hasUsableCredentials()) {
-    return c.json({ error: "Gemini is not configured yet. Reflection needs a key." }, 503);
+  if (!hasUsableLlmCredentials()) {
+    return c.json({ error: "LLM is not configured yet. Reflection needs a key." }, 503);
   }
 
   try {
-    const client = createClient();
-    const response = await client.models.generateContent({
-      model: modelName(),
-      contents: reflectionPrompt,
-      config: {
-        systemInstruction: [
-          "You are Starflow's evening reflection guide for ADHD users.",
-          "Summarize without judgment. Name one pattern, one small win, and one experiment for tomorrow.",
-          "Keep the summary warm and brief. Do not diagnose.",
-        ].join(" "),
-        responseMimeType: "application/json",
-        responseSchema: reflectionSchema(),
-        temperature: 0.45,
-        maxOutputTokens: 2_000,
-      },
+    const response = await generateLlmText({
+      prompt: reflectionPrompt,
+      systemInstruction: [
+        "You are Starflow's evening reflection guide for ADHD users.",
+        "Summarize without judgment. Name one pattern, one small win, and one experiment for tomorrow.",
+        "Keep the summary warm and brief. Do not diagnose.",
+      ].join(" "),
+      responseSchema: reflectionSchema(),
+      schemaName: "reflection",
+      temperature: 0.45,
+      maxOutputTokens: 2_000,
     });
     const parsed = parseModelJson<{
       summary?: string;
       pattern?: string;
       small_win?: string;
       tomorrow_experiment?: string;
-    }>(modelResponseText(response));
+    }>(response);
     const summary = [
       parsed.summary,
       parsed.pattern ? `Pattern: ${parsed.pattern}` : null,
@@ -2231,8 +2008,8 @@ app.post("/api/events", async (c) => {
     );
   }
 
-  if (!hasUsableCredentials()) {
-    return c.json({ error: "Gemini is not configured yet." }, 503);
+  if (!hasUsableLlmCredentials()) {
+    return c.json({ error: "LLM is not configured yet." }, 503);
   }
 
   let ownedTask: Awaited<ReturnType<typeof loadOwnedTask>> | null = null;
@@ -2269,18 +2046,14 @@ app.post("/api/events", async (c) => {
   ].join("\n");
 
   try {
-    const client = createClient();
-    const response = await client.models.generateContent({
-      model: modelName(),
-      contents: prompt,
-      config: {
-        systemInstruction:
-          "You orchestrate user events into task-store updates for an ADHD support app. Prefer one clear dashboard note, one first step, and tiny steps. suggested_tool_action must be one of: none, stitch, google_tasks, google_calendar.",
-        responseMimeType: "application/json",
-        responseSchema: eventRouterSchema(),
-        temperature: 0.4,
-        maxOutputTokens: 2_000,
-      },
+    const response = await generateLlmText({
+      prompt,
+      systemInstruction:
+        "You orchestrate user events into task-store updates for an ADHD support app. Prefer one clear dashboard note, one first step, and tiny steps. suggested_tool_action must be one of: none, stitch, google_tasks, google_calendar.",
+      responseSchema: eventRouterSchema(),
+      schemaName: "event_router",
+      temperature: 0.4,
+      maxOutputTokens: 2_000,
     });
     const routed = parseModelJson<{
       sensed_spark?: string;
@@ -2292,7 +2065,7 @@ app.post("/api/events", async (c) => {
       priority_reason?: string | null;
       suggested_tool_action?: string;
       dashboard_note?: string;
-    }>(modelResponseText(response));
+    }>(response);
 
     return c.json({
       routed: {
@@ -2363,8 +2136,8 @@ app.post("/api/chat", async (c) => {
     }
   }
 
-  if (!hasUsableCredentials()) {
-    return c.json({ error: "Gemini is not configured yet." }, 503);
+  if (!hasUsableLlmCredentials()) {
+    return c.json({ error: "LLM is not configured yet." }, 503);
   }
 
   const roleInstruction = {
@@ -2400,46 +2173,34 @@ app.post("/api/chat", async (c) => {
   ].join("\n\n");
 
   try {
-    const client = createClient();
     const toolDeclarations = toolDeclarationsForAgent(agent);
     let updatedTask = ownedTask?.payload ?? null;
     const uiPatch: Record<string, unknown> = {};
 
     if (toolDeclarations.length > 0) {
-      let contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+      let messages: LlmConversationItem[] = [{ role: "user", text: prompt }];
       let reply = "";
 
       for (let round = 0; round < 3; round += 1) {
-        const response = await client.models.generateContent({
-          model: modelName(),
-          contents,
-          config: {
-            systemInstruction:
-              "You are a Starflow page-specific agent. Respect the page role. Use declared tools for UI or database changes. Be brief and do not invent hidden state.",
-            toolConfig: {
-              functionCallingConfig: {
-                mode: FunctionCallingConfigMode.AUTO,
-              },
-            },
-            tools: [{ functionDeclarations: toolDeclarations }],
-            temperature: 0.45,
-            maxOutputTokens: 2_000,
-          },
+        const response = await generateLlmToolStep({
+          messages,
+          systemInstruction:
+            "You are a Starflow page-specific agent. Respect the page role. Use declared tools for UI or database changes. Be brief and do not invent hidden state.",
+          toolDeclarations,
+          temperature: 0.45,
+          maxOutputTokens: 2_000,
         });
-        const functionCalls = response.functionCalls ?? [];
+        const functionCalls = response.functionCalls;
 
         if (functionCalls.length === 0) {
-          reply = modelResponseText(response) ?? "";
+          reply = response.text;
           break;
         }
 
-        const functionResponseParts = [];
-        const modelParts =
-          response.candidates?.[0]?.content?.parts ??
-          functionCalls.map((call) => ({ functionCall: call }));
+        const functionResponses = [];
 
         for (const call of functionCalls) {
-          let response: Record<string, unknown>;
+          let toolResponse: Record<string, unknown>;
 
           try {
             const result = await executeAgentTool({
@@ -2454,45 +2215,37 @@ app.post("/api/chat", async (c) => {
             if (ownedTask) {
               ownedTask = (await loadOwnedTask(user.id, ownedTask.task.id)) ?? ownedTask;
             }
-            response = result.response;
+            toolResponse = result.response;
           } catch (error) {
-            response = {
+            toolResponse = {
               ok: false,
               error: error instanceof Error ? error.message : "Tool call failed.",
             };
           }
 
-          functionResponseParts.push({
-            functionResponse: {
-              name: call.name ?? "unknown_tool",
-              response,
-            },
+          functionResponses.push({
+            name: call.name ?? "unknown_tool",
+            response: toolResponse,
+            ...(call.callId ? { callId: call.callId } : {}),
           });
         }
 
-        contents = [
-          ...contents,
-          {
-            role: "model",
-            parts: modelParts,
-          },
-          { role: "user", parts: functionResponseParts },
+        messages = [
+          ...messages,
+          { role: "assistant", functionCalls },
+          { role: "tool", functionResponses },
         ];
       }
 
       if (!reply) {
         try {
-          const finalResponse = await client.models.generateContent({
-            model: modelName(),
-            contents,
-            config: {
-              systemInstruction:
-                "Write one concise Starflow reply after the tools ran. Mention what changed only if useful. Do not output JSON.",
-              temperature: 0.35,
-              maxOutputTokens: 800,
-            },
+          reply = await generateLlmText({
+            messages,
+            systemInstruction:
+              "Write one concise Starflow reply after the tools ran. Mention what changed only if useful. Do not output JSON.",
+            temperature: 0.35,
+            maxOutputTokens: 800,
           });
-          reply = modelResponseText(finalResponse) ?? "";
         } catch (error) {
           if (updatedTask || Object.keys(uiPatch).length > 0) {
             logServerError("Final chat reply failed after tools ran.", error);
@@ -2510,17 +2263,14 @@ app.post("/api/chat", async (c) => {
       });
     }
 
-    const firstResponse = await client.models.generateContent({
-      model: modelName(),
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        systemInstruction:
-          "You are a Starflow page-specific agent. Respect the page role. Use declared tools for UI or database changes. Be brief and do not invent hidden state.",
-        responseMimeType: "application/json",
-        responseSchema: chatSchema(),
-        temperature: 0.45,
-        maxOutputTokens: 2_000,
-      },
+    const firstResponse = await generateLlmText({
+      prompt,
+      systemInstruction:
+        "You are a Starflow page-specific agent. Respect the page role. Use declared tools for UI or database changes. Be brief and do not invent hidden state.",
+      responseSchema: chatSchema(),
+      schemaName: "chat",
+      temperature: 0.45,
+      maxOutputTokens: 2_000,
     });
 
     const parsed = parseModelJson<{
@@ -2528,7 +2278,7 @@ app.post("/api/chat", async (c) => {
       capture_text?: string | null;
       carry_forward?: string | null;
       route?: string | null;
-    }>(modelResponseText(firstResponse));
+    }>(firstResponse);
 
     if (agent === "capture" && parsed.capture_text) {
       uiPatch.captureText = parsed.capture_text;
@@ -2565,7 +2315,7 @@ Bun.serve({
   fetch: app.fetch,
 });
 
-const startupConfig = geminiConfig();
+const startupConfig = llmConfig();
 
 // biome-ignore lint/suspicious/noConsole: Startup logging is useful in Cloud Run logs.
 console.log(

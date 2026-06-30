@@ -19,6 +19,7 @@
     "db:down": "./scripts/dev-db.sh down",
     "db:logs": "./scripts/dev-db.sh logs -f postgres",
     "db:migrate": "./scripts/db-migrate.sh",
+    "db:migrate:deploy": "bun run scripts/db-migrate-deploy.ts",
     "db:migrate:url": "./scripts/db-migrate-url.sh",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
@@ -44,8 +45,10 @@
     "google-auth-library": "^10.7.0",
     "hono": "^4.12.26",
     "lucide-react": "^1.21.0",
+    "openai": "^6.44.0",
     "postgres": "^3.4.9",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "zod": "^4.4.3"
   }
 }
